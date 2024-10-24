@@ -19,8 +19,9 @@ DEFAULT_START_TIME = pd.to_datetime(0., utc=True)
 DEFAULT_TIMEDELTA = pd.to_timedelta(3600, unit='s')
 
 class Muskingum:
-    def __init__(self, json, init_o_t=None, dt=3600.0, t_0=0.0, name=None,
-                 create_state_space=True, sparse=False, verbose=False):
+    def __init__(self, json, init_o_t=None, timedelta=DEFAULT_TIMEDELTA, 
+                 datetime=DEFAULT_START_TIME, name=None, create_state_space=True,
+                  sparse=False, verbose=False):
         self.logger = logger
         self.verbose = verbose
         self.sparse = sparse
@@ -54,7 +55,7 @@ class Muskingum:
             self.o_t_next[:] = 1e-3 * np.ones(n, dtype=np.float64)
             self.init_states(o_t_next=self.o_t_next)
             self.o_t_prev[:] = self.o_t_next[:]
-            self.i_t_prev = self.i_t_next[:]
+            self.i_t_prev[:] = self.i_t_next[:]
         else:
             assert isinstance(init_o_t, np.ndarray)
             assert init_o_t.ndim == 1
@@ -71,9 +72,7 @@ class Muskingum:
             self.A = np.zeros((n, n), dtype=np.float64)
             self.B = np.zeros((n, n), dtype=np.float64)
         # Compute parameters
-        timedelta = datetime.timedelta(seconds=dt)
-        self.t = t_0
-        self.datetime = pd.to_datetime(t_0, unit="s", utc=True)
+        self.datetime = datetime
         self.timedelta = timedelta
         self.saved_states = {}
         # TODO: Should allow these to be set
@@ -103,6 +102,34 @@ class Muskingum:
     def dt(self):
         dt = float(self.timedelta.seconds)
         return dt
+
+    @property
+    def datetime(self):
+        return self._datetime
+
+    @datetime.setter
+    def datetime(self, new_datetime):
+        try:
+            assert isinstance(new_datetime, pd.Timestamp)
+        except:
+            raise TypeError('New datetime must be of type `pd.Timestamp`')
+        try:
+            assert new_datetime.tz == datetime.timezone.utc
+        except:
+            raise ValueError('New datetime must be UTC.')
+        self._datetime = new_datetime
+
+    @property
+    def timedelta(self):
+        return self._timedelta
+
+    @timedelta.setter
+    def timedelta(self, new_timedelta):
+        try:
+            assert isinstance(new_timedelta, pd.Timedelta)
+        except:
+            raise TypeError('New timedelta must be of type `pd.Timedelta`')
+        self._timedelta = new_timedelta
 
     def read_nhd_file(self, d):
         logger.info('Reading NHD file...')
@@ -392,7 +419,6 @@ class Muskingum:
         self.i_t_next = i_t_next
         self.i_t_prev = i_t_prev
         self.datetime += timedelta
-        self.t += dt
         for _, callback in self.callbacks.items():
             callback.__on_step_end__()
         logger.debug(f'Stepped to time {self.datetime}')
@@ -411,24 +437,40 @@ class Muskingum:
             self.step(p_t_next, **kwargs)
             yield self
 
-    def simulate_iter(self, dataframe, **kwargs):
+    def simulate_iter(self, dataframe, start_time=None, end_time=None, o_t_init=None, **kwargs):
         assert isinstance(dataframe.index, pd.core.indexes.datetimes.DatetimeIndex)
         assert (dataframe.index.tz == datetime.timezone.utc)
         assert np.in1d(self.reach_ids, dataframe.columns).all()
+        # Set start and end times
+        # TODO: Put in checks here
+        if end_time is None:
+            end_time = dataframe.index.max()
+        else:
+            try:
+                assert isinstance(end_time, pd.Timestamp)
+            except:
+                raise TypeError('`end_time` must be of type `pd.Timestamp`')
+        if start_time is None:
+            start_time = self.datetime
+        else:
+            self.datetime = start_time
+            try:
+                assert o_t_init is not None
+            except:
+                ValueError('If `start_time` is specified, initial state `o_t_init` must be provided.')
+        if o_t_init is not None:
+            self.init_states(o_t_next=o_t_init)
         # Execute pre-simulation callbacks
         for _, callback in self.callbacks.items():
             callback.__on_simulation_start__()
         # Crop input data to model reaches
         dataframe = dataframe[self.reach_ids]
-        timedelta = self.timedelta
-        for index in dataframe.index:
-            # TODO: Remove. This is too error prone
-            # timedelta = index - self.datetime
-            p_t_next = interpolate_sample(float(index.value), 
+        while self.datetime < end_time:
+            next_timestep = self.datetime + self.timedelta
+            p_t_next = interpolate_sample(float(next_timestep.value), 
                                           dataframe.index.astype(int).astype(float).values,
                                           dataframe.values) 
-            #p_t_next = dataframe.loc[index, :].values
-            self.step_iter(p_t_next, timedelta=timedelta, **kwargs)
+            self.step_iter(p_t_next, **kwargs)
             yield self
         # Execute post-simulation callbacks
         for _, callback in self.callbacks.items():
