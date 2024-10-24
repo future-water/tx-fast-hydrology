@@ -1,6 +1,6 @@
 import math
 import numpy as np
-from numba import njit
+from numba import njit, prange
 
 @njit
 def interpolate_sample(x, xp, fp, method=1):
@@ -60,6 +60,159 @@ def has_same_index(known_index, dataframe_index):
                 return False
         return True
     return False
+
+@njit
+def _ax_bu(startnodes, endnodes, alpha, beta, chi, gamma, i_t_prev, o_t_prev, q_t_next, indegree):
+    n = endnodes.size
+    m = startnodes.size
+    i_t_next = np.zeros(n, dtype=np.float64)
+    o_t_next = np.zeros(n, dtype=np.float64)
+    indegree_t = indegree.copy()
+    # Simulate output
+    for k in range(m):
+        startnode = startnodes[k]
+        endnode = endnodes[startnode]
+        while(indegree_t[startnode] == 0):
+            alpha_i = alpha[startnode]
+            beta_i = beta[startnode]
+            chi_i = chi[startnode]
+            gamma_i = gamma[startnode]
+            o_t_next[startnode] += (alpha_i * i_t_next[startnode]
+                                    + beta_i * i_t_prev[startnode]
+                                    + chi_i * o_t_prev[startnode]
+                                    + gamma_i * q_t_next[startnode])
+            if startnode != endnode:
+                i_t_next[endnode] += o_t_next[startnode]
+            indegree_t[endnode] -= 1
+            startnode = endnode
+            endnode = endnodes[startnode]
+    return i_t_next, o_t_next
+
+@njit # Uncomment for large networks
+def _ax(startnodes, endnodes, alpha, beta, chi, i_t_prev, o_t_prev, indegree):
+    n = endnodes.size
+    m = startnodes.size
+    i_t_next = np.zeros(n, dtype=np.float64)
+    o_t_next = np.zeros(n, dtype=np.float64)
+    indegree_t = indegree.copy()
+    # Simulate output
+    for k in range(m):
+        startnode = startnodes[k]
+        endnode = endnodes[startnode]
+        while(indegree_t[startnode] == 0):
+            alpha_i = alpha[startnode]
+            beta_i = beta[startnode]
+            chi_i = chi[startnode]
+            o_t_next[startnode] += (alpha_i * i_t_next[startnode]
+                                    + beta_i * i_t_prev[startnode]
+                                    + chi_i * o_t_prev[startnode])
+            if startnode != endnode:
+                i_t_next[endnode] += o_t_next[startnode]
+            indegree_t[endnode] -= 1
+            startnode = endnode
+            endnode = endnodes[startnode]
+    return i_t_next, o_t_next
+
+@njit # Uncomment for large networks
+def _apply_gain(startnodes, endnodes, gain, indegree):
+    n = endnodes.size
+    m = startnodes.size
+    i_t_next = np.zeros(n, dtype=np.float64)
+    o_t_next = np.zeros(n, dtype=np.float64)
+    indegree_t = indegree.copy()
+    # Simulate output
+    for k in range(m):
+        startnode = startnodes[k]
+        endnode = endnodes[startnode]
+        while(indegree_t[startnode] == 0):
+            o_t_next[startnode] += gain[startnode]
+            if startnode != endnode:
+                i_t_next[endnode] += o_t_next[startnode]
+            indegree_t[endnode] -= 1
+            startnode = endnode
+            endnode = endnodes[startnode]
+    return i_t_next, o_t_next
+
+@njit
+def numba_init_inflows(a, indices, b):
+    n = len(indices)
+    for i in range(n):
+        k = indices[i]
+        a[k] += b[i]
+
+@njit
+def _ap(P, out, startnodes, endnodes, alpha, beta, chi,
+                 indegree):
+    m, n = P.shape
+    assert (m == n)
+    for i in range(n):
+        o_t_prev = P[:, i]
+        i_t_prev = np.zeros(n, dtype=np.float64)
+        numba_init_inflows(i_t_prev, endnodes, o_t_prev)
+        _, o_t_next = _ax(startnodes, endnodes, alpha, beta, chi,
+                          i_t_prev, o_t_prev, indegree)
+        out[:, i] = o_t_next
+    return out
+
+@njit(parallel=True)
+def _ap_par(P, out, startnodes, endnodes, alpha, beta, chi,
+                 indegree):
+    m, n = P.shape
+    assert (m == n)
+    for i in prange(n):
+        o_t_prev = P[:, i]
+        i_t_prev = np.zeros(n, dtype=np.float64)
+        numba_init_inflows(i_t_prev, endnodes, o_t_prev)
+        _, o_t_next = _ax(startnodes, endnodes, alpha, beta, chi,
+                          i_t_prev, o_t_prev, indegree)
+        out[:, i] = o_t_next
+    return out
+
+
+@njit
+def numba_matmat(P, out, startnodes, endnodes, alpha, beta, chi,
+                 indegree):
+    m, n = P.shape
+    assert (m == n)
+    for i in range(n):
+        o_t_prev = P[:, i]
+        i_t_prev = np.zeros(n, dtype=np.float64)
+        numba_init_inflows(i_t_prev, endnodes, o_t_prev)
+        _, o_t_next = _ax(startnodes, endnodes, alpha, beta, chi,
+                          i_t_prev, o_t_prev, indegree)
+        out[:, i] = o_t_next
+    out = out.T
+    for i in range(n):
+        o_t_prev = out[:, i]
+        i_t_prev = np.zeros(n, dtype=np.float64)
+        numba_init_inflows(i_t_prev, endnodes, o_t_prev)
+        _, o_t_next = _ax(startnodes, endnodes, alpha, beta, chi,
+                          i_t_prev, o_t_prev, indegree)
+        out[:, i] = o_t_next
+    return out
+
+@njit(parallel=True)
+def numba_matmat_par(P, out, startnodes, endnodes, alpha, beta, chi,
+                     indegree):
+    m, n = P.shape
+    assert (m == n)
+    for i in prange(n):
+        o_t_prev = P[:, i]
+        i_t_prev = np.zeros(n, dtype=np.float64)
+        numba_init_inflows(i_t_prev, endnodes, o_t_prev)
+        _, o_t_next = _ax(startnodes, endnodes, alpha, beta, chi,
+                          i_t_prev, o_t_prev, indegree)
+        out[:, i] = o_t_next
+    out = out.T
+    for i in prange(n):
+        o_t_prev = out[:, i]
+        i_t_prev = np.zeros(n, dtype=np.float64)
+        numba_init_inflows(i_t_prev, endnodes, o_t_prev)
+        _, o_t_next = _ax(startnodes, endnodes, alpha, beta, chi,
+                          i_t_prev, o_t_prev, indegree)
+        out[:, i] = o_t_next
+    return out
+
 
 @njit
 def _polevl(x, coefs, N):
