@@ -6,7 +6,7 @@ import numpy as np
 import pandas as pd
 import scipy.linalg
 from tx_fast_hydrology.nutils import interpolate_sample, interpolate_samples
-from tx_fast_hydrology.nutils import _ap_par, numba_matmat_par, _apply_gain
+from tx_fast_hydrology.nutils import _ap_par, _aqat_par, _apply_gain
 
 logger = logging.getLogger(__name__)
 
@@ -111,8 +111,8 @@ class KalmanFilter(BaseCallback):
         dz = Z - o_t_next[s]
         # Compute prior covariance
         out = np.empty(P_t_prev.shape)
-        P_t_next = numba_matmat_par(P_t_prev, out, sub_startnodes, endnodes,
-                                    alpha, beta, chi, indegree)
+        P_t_next = _aqat_par(P_t_prev, out, sub_startnodes, endnodes,
+                             alpha, beta, chi, indegree)
         P_t_next += Q_cov
         # Compute gain and posterior covariance
         K = P_t_next[:,s] @ np.linalg.inv(P_t_next[s][:,s] + R_cov)
@@ -186,8 +186,8 @@ class KalmanSmoother(KalmanFilter):
         dz = Z - o_t_prior[s]
         # Compute prior covariance
         out = np.empty(P_t_prev.shape)
-        P_t_prior = numba_matmat_par(P_t_prev, out, sub_startnodes, endnodes,
-                                    alpha, beta, chi, indegree)
+        P_t_prior = _aqat_par(P_t_prev, out, sub_startnodes, endnodes,
+                              alpha, beta, chi, indegree)
         P_t_prior += Q_cov
         # Compute gain and posterior covariance
         K = P_t_prior[:,s] @ np.linalg.inv(P_t_prior[s][:,s] + R_cov)
@@ -311,8 +311,8 @@ class KalmanSmootherIO(KalmanSmoother):
         dz = Z - o_t_prior[s]
         # Compute prior covariance
         out = np.empty(P_t_prev.shape)
-        P_t_prior = numba_matmat_par(P_t_prev, out, sub_startnodes, endnodes,
-                                    alpha, beta, chi, indegree)
+        P_t_prior = _aqat_par(P_t_prev, out, sub_startnodes, endnodes,
+                              alpha, beta, chi, indegree)
         P_t_prior += Q_cov
         # Compute gain and posterior covariance
         K = P_t_prior[:,s] @ np.linalg.inv(P_t_prior[s][:,s] + R_cov)

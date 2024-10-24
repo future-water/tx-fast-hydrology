@@ -170,8 +170,8 @@ def _ap_par(P, out, startnodes, endnodes, alpha, beta, chi,
 
 
 @njit
-def numba_matmat(P, out, startnodes, endnodes, alpha, beta, chi,
-                 indegree):
+def _aqat(P, out, startnodes, endnodes, alpha, beta, chi,
+          indegree):
     m, n = P.shape
     assert (m == n)
     for i in range(n):
@@ -192,8 +192,8 @@ def numba_matmat(P, out, startnodes, endnodes, alpha, beta, chi,
     return out
 
 @njit(parallel=True)
-def numba_matmat_par(P, out, startnodes, endnodes, alpha, beta, chi,
-                     indegree):
+def _aqat_par(P, out, startnodes, endnodes, alpha, beta, chi,
+              indegree):
     m, n = P.shape
     assert (m == n)
     for i in prange(n):
@@ -212,7 +212,6 @@ def numba_matmat_par(P, out, startnodes, endnodes, alpha, beta, chi,
                           i_t_prev, o_t_prev, indegree)
         out[:, i] = o_t_next
     return out
-
 
 @njit
 def _polevl(x, coefs, N):
