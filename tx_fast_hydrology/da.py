@@ -7,6 +7,7 @@ import pandas as pd
 import scipy.linalg
 from tx_fast_hydrology.nutils import interpolate_sample, interpolate_samples
 from tx_fast_hydrology.nutils import _ap_par, _aqat_par, _apply_gain
+from tx_fast_hydrology.callbacks import BaseCallback
 
 logger = logging.getLogger(__name__)
 
