@@ -1,6 +1,7 @@
 import uuid
 import copy
 import logging
+import json
 from scipy.sparse import lil_matrix, csgraph
 from scipy.optimize import root_scalar
 import numpy as np
@@ -9,9 +10,8 @@ import datetime
 from tx_fast_hydrology.nutils import interpolate_sample, _ax_bu
 from tx_fast_hydrology.simulation import ModelCollection
 from tx_fast_hydrology.callbacks import BaseCallback
+from tx_fast_hydrology.io import ModelEncoder, ModelDecoder
 from logging import DEBUG, INFO, WARNING, ERROR, CRITICAL
-
-logger = logging.getLogger(__name__)
 
 MIN_SLOPE = 1e-8
 
@@ -22,7 +22,6 @@ class Muskingum:
     def __init__(self, json, init_o_t=None, timedelta=DEFAULT_TIMEDELTA, 
                  datetime=DEFAULT_START_TIME, name=None, create_state_space=True,
                   sparse=False, verbose=False):
-        self.logger = logger
         self.verbose = verbose
         self.sparse = sparse
         self.callbacks = {}
@@ -31,6 +30,7 @@ class Muskingum:
         else:
             assert isinstance(name, str)
             self.name = name
+        self.logger = logging.getLogger(self.name)
         # Read json input file
         assert isinstance(json, dict)
         self.read_nhd_file(json)
@@ -94,14 +94,21 @@ class Muskingum:
             'endnodes' : self.endnodes,
             'K' : self.K,
             'X' : self.X,
-            'o_t' : self.o_t_next
+            'o_t' : self.o_t_next,
+            'paths' : self.paths
         }
         return info_dict
 
     @property
-    def dt(self):
-        dt = float(self.timedelta.seconds)
-        return dt
+    def name(self):
+        return self._name
+
+    @name.setter
+    def name(self, new_name):
+        if not isinstance(new_name, str):
+            self.logger.warning(f'`name` is not a string, converting to {new_name}')
+            new_name = str(new_name)
+        self._name = new_name
 
     @property
     def datetime(self):
@@ -131,8 +138,25 @@ class Muskingum:
             raise TypeError('New timedelta must be of type `pd.Timedelta`')
         self._timedelta = new_timedelta
 
+    @property
+    def o_t(self):
+        return self.o_t_next
+
+    @o_t.setter
+    def o_t(self, new_o_t):
+        try:
+            new_o_t = np.asarray(new_o_t, dtype=np.float64)
+        except:
+            raise TypeError('New `o_t` must be convertible to float64 np.ndarray')
+        self.o_t_next = new_o_t
+
+    @property
+    def dt(self):
+        dt = float(self.timedelta.seconds)
+        return dt
+
     def read_nhd_file(self, d):
-        logger.info('Reading NHD file...')
+        self.logger.info('Reading NHD file...')
         node_ids = [i['attributes']['COMID'] for i in d['features']]
         link_ids = [i['attributes']['COMID'] for i in d['features']]
         paths = [np.asarray(i['geometry']['paths']) for i in d['features']]
@@ -188,7 +212,7 @@ class Muskingum:
         self.Tw = np.zeros(n, dtype=np.float64)
 
     def construct_network(self):
-        logger.info('Constructing network...')
+        self.logger.info('Constructing network...')
         # NOTE: node_ids and source_node_ids should always be the same for NHD
         # But not necessarily so for original json files
         node_ids = self.node_ids
@@ -259,7 +283,7 @@ class Muskingum:
         self.Qn[:] = Qn
 
     def compute_K_and_X(self, h, Q):
-        logger.info('Computing K and X...')
+        self.logger.info('Computing K and X...')
         Bw = self.Bw
         z = self.z
         R = self.R
@@ -306,7 +330,7 @@ class Muskingum:
         return gamma
 
     def compute_muskingum_coeffs(self, K=None, X=None, dt=None):
-        logger.info('Computing Muskingum coefficients...')
+        self.logger.info('Computing Muskingum coefficients...')
         if K is None:
             K = self.K
         if X is None:
@@ -319,7 +343,7 @@ class Muskingum:
         self.gamma[:] = self.compute_gamma(K, X, dt)
 
     def create_state_space(self, overwrite_old=True):
-        logger.info('Creating state-space system...')
+        self.logger.info('Creating state-space system...')
         startnodes = self.startnodes
         endnodes = self.endnodes
         alpha = self.alpha
@@ -404,7 +428,7 @@ class Muskingum:
         o_t_prev = self.o_t_next
         i_t_prev = self.i_t_next
         if dt != self.dt:
-            logger.warning('Timestep has changed. Recomputing Muskingum coefficients.')
+            self.logger.warning('Timestep has changed. Recomputing Muskingum coefficients.')
             self.compute_muskingum_coeffs(dt=dt)
         alpha = self.alpha
         beta = self.beta
@@ -421,7 +445,7 @@ class Muskingum:
         self.datetime += timedelta
         for _, callback in self.callbacks.items():
             callback.__on_step_end__()
-        logger.debug(f'Stepped to time {self.datetime}')
+        self.logger.debug(f'Stepped to time {self.datetime}')
 
     def simulate(self, dataframe, **kwargs):
         raise NotImplementedError
@@ -477,7 +501,7 @@ class Muskingum:
             callback.__on_simulation_end__()
 
     def save_state(self):
-        logger.info(f'Saving state for model {self.name} at time {self.datetime}...')
+        self.logger.info(f'Saving state for model {self.name} at time {self.datetime}...')
         self.saved_states["datetime"] = self.datetime
         # TODO: Don't need to store `i_t_next`
         self.saved_states["i_t_next"] = self.i_t_next.copy()
@@ -489,7 +513,7 @@ class Muskingum:
         self.datetime = self.saved_states["datetime"]
         self.i_t_next = self.saved_states["i_t_next"]
         self.o_t_next = self.saved_states["o_t_next"]
-        logger.info(f'Loading state for model {self.name} at time {self.datetime}...')
+        self.logger.info(f'Loading state for model {self.name} at time {self.datetime}...')
         for _, callback in self.callbacks.items():
             callback.__on_load_state__()
 
