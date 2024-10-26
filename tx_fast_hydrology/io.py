@@ -1,7 +1,11 @@
 import re
 import json
+import uuid
 import numpy as np
 import pandas as pd
+
+DEFAULT_START_TIME = pd.to_datetime(0., utc=True)
+DEFAULT_TIMEDELTA = pd.to_timedelta(3600, unit='s')
 
 class ModelEncoder(json.JSONEncoder):
     def default(self, obj):
@@ -71,3 +75,41 @@ def dump_model_file(obj, file_path, dump_optional=True):
             to_dump = {k : v for k, v in obj.items()
                         if k in required_fields}
         json.dump(to_dump, f, cls=ModelEncoder)
+
+def load_nhd_geojson(d):
+    node_ids = [i['attributes']['COMID'] for i in d['features']]
+    link_ids = [i['attributes']['COMID'] for i in d['features']]
+    paths = [np.asarray(i['geometry']['paths']) for i in d['features']]
+    reach_ids = link_ids
+    reach_ids = [str(x) for x in reach_ids]
+    source_node_ids = [i['attributes']['COMID'] for i in d['features']]
+    target_node_ids = [i['attributes']['toCOMID'] for i in d['features']]
+    dx = np.asarray([i['attributes']['Shape_Length'] for i in d['features']]) #* 1000 # km to m
+    # NOTE: node_ids and source_node_ids should always be the same for NHD
+    # But not necessarily so for original json files
+    node_ids = node_ids
+    source_node_ids = source_node_ids
+    target_node_ids = target_node_ids
+    self_loops = []
+    node_index_map = pd.Series(np.arange(len(node_ids)), index=node_ids)
+    startnodes = node_index_map.reindex(source_node_ids, fill_value=-1).values
+    endnodes = node_index_map.reindex(target_node_ids, fill_value=-1).values
+    for i in range(len(startnodes)):
+        if endnodes[i] == -1:
+            self_loops.append(i)
+            endnodes[i] = startnodes[i]
+    n = startnodes.size
+    obj = {
+        'name' : str(uuid.uuid4()),
+        'datetime' : DEFAULT_START_TIME,
+        'timedelta' : DEFAULT_TIMEDELTA,
+        'reach_ids' : reach_ids,
+        'startnodes' : startnodes,
+        'endnodes' : endnodes,
+        'K' : 3600 * np.ones(n, dtype=np.float64),
+        'X' : 0.29 * np.ones(n, dtype=np.float64),
+        'o_t' : 1e-3 * np.ones(n, dtype=np.float64),
+        'dx' : dx,
+        'paths' : paths
+    }
+    return obj

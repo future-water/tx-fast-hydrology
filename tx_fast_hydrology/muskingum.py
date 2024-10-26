@@ -3,14 +3,13 @@ import copy
 import logging
 import json
 from scipy.sparse import lil_matrix, csgraph
-from scipy.optimize import root_scalar
 import numpy as np
 import pandas as pd
 import datetime
 from tx_fast_hydrology.nutils import interpolate_sample, _ax_bu
 from tx_fast_hydrology.simulation import ModelCollection
 from tx_fast_hydrology.callbacks import BaseCallback
-from tx_fast_hydrology.io import load_model_file, dump_model_file
+from tx_fast_hydrology.io import load_model_file, dump_model_file, load_nhd_geojson
 from logging import DEBUG, INFO, WARNING, ERROR, CRITICAL
 
 MIN_SLOPE = 1e-8
@@ -19,50 +18,27 @@ DEFAULT_START_TIME = pd.to_datetime(0., utc=True)
 DEFAULT_TIMEDELTA = pd.to_timedelta(3600, unit='s')
 
 class Muskingum:
-    def __init__(self, json, init_o_t=None, timedelta=DEFAULT_TIMEDELTA, 
-                 datetime=DEFAULT_START_TIME, name=None, create_state_space=True,
-                  sparse=False, verbose=False):
-        self.verbose = verbose
+    def __init__(self, data, load_optional=True, create_state_space=False, sparse=False):
         self.sparse = sparse
         self.callbacks = {}
-        if name is None:
-            self.name = str(uuid.uuid4())
-        else:
-            self.name = name
-        self.logger = logging.getLogger(self.name)
+        self.saved_states = {}
         # Read json input file
-        assert isinstance(json, dict)
-        self.read_nhd_file(json)
-        # Construct network topology
-        self.construct_network()
+        if isinstance(data, dict):
+            self.load_model(data, load_optional=load_optional)
+        elif isinstance(data, str):
+            self.load_model_file(data, load_optional=load_optional)
+        else:
+            raise TypeError('`data` must be a file path or dictionary.')
+        # Create logger
+        self.logger = logging.getLogger(self.name)
         # Create arrays
-        n = self.endnodes.size
-        self.n = n
-        self.alpha = np.zeros(n, dtype=np.float64)
-        self.beta = np.zeros(n, dtype=np.float64)
-        self.chi = np.zeros(n, dtype=np.float64)
-        self.gamma = np.zeros(n, dtype=np.float64)
-        self.h = np.zeros(n, dtype=np.float64)
-        self.Qn = np.zeros(n, dtype=np.float64)
-        self.K = np.zeros(n, dtype=np.float64)
-        self.X = np.zeros(n, dtype=np.float64)
-        self.o_t_next = np.zeros(n, dtype=np.float64)
+        n = self.n
         self.o_t_prev = np.zeros(n, dtype=np.float64)
         self.i_t_next = np.zeros(n, dtype=np.float64)
         self.i_t_prev = np.zeros(n, dtype=np.float64)
-        if init_o_t is None:
-            self.o_t_next[:] = 1e-3 * np.ones(n, dtype=np.float64)
-            self.init_states(o_t_next=self.o_t_next)
-            self.o_t_prev[:] = self.o_t_next[:]
-            self.i_t_prev[:] = self.i_t_next[:]
-        else:
-            assert isinstance(init_o_t, np.ndarray)
-            assert init_o_t.ndim == 1
-            assert init_o_t.size == n
-            self.o_t_next[:] = init_o_t.copy()
-            self.init_states(o_t_next=self.o_t_next)
-            self.o_t_prev[:] = self.o_t_next[:]
-            self.i_t_prev[:] = self.i_t_next[:]
+        self.init_states(o_t_next=self.o_t_next)
+        self.o_t_prev[:] = self.o_t_next[:]
+        self.i_t_prev[:] = self.i_t_next[:]
         # Initialize state-space matrices
         if sparse:
             self.A = lil_matrix((n, n))
@@ -70,13 +46,11 @@ class Muskingum:
         else:
             self.A = np.zeros((n, n), dtype=np.float64)
             self.B = np.zeros((n, n), dtype=np.float64)
-        # Compute parameters
-        self.datetime = datetime
-        self.timedelta = timedelta
-        self.saved_states = {}
-        # TODO: Should allow these to be set
-        self.K[:] = 3600.
-        self.X[:] = 0.29
+        # Compute alpha, beta, and gamma coefficients
+        self.alpha = np.zeros(n, dtype=np.float64)
+        self.beta = np.zeros(n, dtype=np.float64)
+        self.chi = np.zeros(n, dtype=np.float64)
+        self.gamma = np.zeros(n, dtype=np.float64)
         self.compute_muskingum_coeffs()
         if create_state_space:
             self.create_state_space()
@@ -94,6 +68,7 @@ class Muskingum:
             'K' : self.K,
             'X' : self.X,
             'o_t' : self.o_t_next,
+            'dx' : self.dx,
             'paths' : self.paths
         }
         return info_dict
@@ -154,90 +129,69 @@ class Muskingum:
         dt = float(self.timedelta.seconds)
         return dt
 
+    def load_model(self, obj, load_optional=True):
+        required_fields = {'name', 'datetime', 'timedelta', 'reach_ids',
+                           'startnodes', 'endnodes', 'K', 'X', 'o_t'}
+        optional_fields = {'paths', 'dx'}
+        defaults = {'name' : str(uuid.uuid4()), 
+                    'datetime' : DEFAULT_START_TIME,
+                    'timedelta' : DEFAULT_TIMEDELTA,
+                    'dx' : None,
+                    'paths' : []}
+        # Validate data
+        try:
+            assert required_fields.issubset(set(obj.keys()))
+        except:
+            raise ValueError(f'Model field must contain fields {required_fields}')
+        try:
+            assert isinstance(obj['startnodes'], np.ndarray)
+            assert isinstance(obj['endnodes'], np.ndarray)
+            assert isinstance(obj['K'], np.ndarray)
+            assert isinstance(obj['X'], np.ndarray)
+            assert isinstance(obj['o_t'], np.ndarray)
+            assert obj['startnodes'].dtype == np.int64
+            assert obj['endnodes'].dtype == np.int64
+            assert obj['K'].dtype == np.float64
+            assert obj['X'].dtype == np.float64
+            assert obj['o_t'].dtype == np.float64
+        except:
+            raise TypeError('Typing of input arrays is incorrect.')
+        try:
+            assert (obj['startnodes'].size == obj['endnodes'].size 
+                    == obj['K'].size == obj['X'].size == obj['o_t'].size)
+        except:
+            raise ValueError('Arrays are not the same length')
+        # If optional fields are desired, add to the set of fields
+        if load_optional:
+            fields = required_fields.union(optional_fields)
+        else:
+            fields = required_fields
+        # Iterate through fields and add as attributes to class instance
+        for field in fields:
+            if field in defaults:
+                default_value = defaults[field]
+                value = obj.setdefault(field, default_value)
+            else:
+                value = obj[field]
+            setattr(self, field, value)
+        # Add derived attributes
+        startnodes, endnodes = self.startnodes, self.endnodes
+        self.n = startnodes.size
+        self.indegree = self.compute_indegree(startnodes, endnodes)
+
     def load_model_file(self, file_path, load_optional=True):
         obj = load_model_file(file_path, load_optional=load_optional)
-        for k, v in obj.items():
-            setattr(self, k, v)
+        self.load_model(obj)
     
     def dump_model_file(self, file_path, dump_optional=True):
         obj = self.info
         return dump_model_file(obj, file_path, dump_optional=dump_optional)
 
-    def read_nhd_file(self, d):
-        self.logger.info('Reading NHD file...')
-        node_ids = [i['attributes']['COMID'] for i in d['features']]
-        link_ids = [i['attributes']['COMID'] for i in d['features']]
-        paths = [np.asarray(i['geometry']['paths']) for i in d['features']]
-        reach_ids = link_ids
-        reach_ids = [str(x) for x in reach_ids]
-        source_node_ids = [i['attributes']['COMID'] for i in d['features']]
-        target_node_ids = [i['attributes']['toCOMID'] for i in d['features']]
-        dx = np.asarray([i['attributes']['Shape_Length'] for i in d['features']]) #* 1000 # km to m
-        self.reach_ids = reach_ids
-        self.node_ids = node_ids
-        self.source_node_ids = source_node_ids
-        self.target_node_ids = target_node_ids
-        self.dx = dx
-        self.paths = paths
-
-    def read_hydraulic_geometry(self, d):
-        raise NotImplementedError
-        source_node_ids = self.source_node_ids
-        target_node_ids = self.target_node_ids
-        # Set trapezoidal geometry
-        Bws = []
-        h_maxes = []
-        zs = []
-        for link in d["links"]:
-            geom = link["hydrologic_routing"]["muskingum_cunge_station"][
-                "cross_section"
-            ]
-            Tw = geom[3]["lr"] - geom[0]["lr"]
-            Bw = geom[2]["lr"] - geom[1]["lr"]
-            h_max = geom[0]["z"] - geom[1]["z"]
-            z = (geom[1]["lr"] - geom[0]["lr"]) / h_max
-            Bws.append(Bw)
-            h_maxes.append(h_max)
-            zs.append(z)
-        self.Bw = np.asarray(Bws)
-        self.h_max = np.asarray(h_maxes)
-        self.z = np.asarray(zs)
-        n = self.Bw.size
-        node_elevs = {i["uid"]: i["location"]["z"] for i in d["nodes"]}
-        So = []
-        for i in range(len(source_node_ids)):
-            source_node_id = source_node_ids[i]
-            target_node_id = target_node_ids[i]
-            z_0 = node_elevs[source_node_id]
-            z_1 = node_elevs.get(target_node_id, z_0 - 1)
-            dx_i = d["links"][i]["length"]
-            slope = (z_0 - z_1) / dx_i
-            So.append(max(slope, MIN_SLOPE))
-        self.So = np.asarray(So)
-        self.Ar = np.zeros(n, dtype=np.float64)
-        self.P = np.zeros(n, dtype=np.float64)
-        self.R = np.zeros(n, dtype=np.float64)
-        self.Tw = np.zeros(n, dtype=np.float64)
-
-    def construct_network(self):
-        self.logger.info('Constructing network...')
-        # NOTE: node_ids and source_node_ids should always be the same for NHD
-        # But not necessarily so for original json files
-        node_ids = self.node_ids
-        source_node_ids = self.source_node_ids
-        target_node_ids = self.target_node_ids
-        self_loops = []
-        node_index_map = pd.Series(np.arange(len(node_ids)), index=node_ids)
-        startnodes = node_index_map.reindex(source_node_ids, fill_value=-1).values
-        endnodes = node_index_map.reindex(target_node_ids, fill_value=-1).values
-        for i in range(len(startnodes)):
-            if endnodes[i] == -1:
-                self_loops.append(i)
-                endnodes[i] = startnodes[i]
-        indegree = self.compute_indegree(startnodes, endnodes)
-        self.startnodes = startnodes
-        self.endnodes = endnodes
-        self.indegree = indegree
+    @classmethod
+    def from_nhd_geojson(cls, data, **kwargs):
+        parsed_data = load_nhd_geojson(data)
+        newinstance = cls(parsed_data, **kwargs)
+        return newinstance
 
     def compute_indegree(self, startnodes, endnodes):
         self_loops = []
@@ -248,77 +202,6 @@ class Muskingum:
         for self_loop in self_loops:
             indegree[self_loop] -= 1
         return indegree
-
-    def compute_normal_depth(self, Q, mindepth=0.01):
-        So = self.So
-        Bw = self.Bw
-        z = self.z
-        mann_n = self.mann_n
-        h = []
-        for i in range(Q.size):
-            Qi = Q[i]
-            Bi = Bw[i]
-            zi = z[i]
-            Soi = So[i]
-            mann_ni = mann_n[i]
-            result = root_scalar(
-                _solve_normal_depth,
-                args=(Qi, Bi, zi, mann_ni, Soi),
-                x0=1.0,
-                fprime=_dQ_dh,
-                method="newton",
-            )
-            h.append(result.root)
-        h = np.asarray(h, dtype=np.float64)
-        h = np.maximum(h, mindepth)
-        self.h[:] = h
-
-    def compute_hydraulic_geometry(self, h):
-        Bw = self.Bw
-        z = self.z
-        So = self.So
-        mann_n = self.mann_n
-        Ar = (Bw + h * z) * h
-        P = Bw + 2 * h * np.sqrt(1.0 + z**2)
-        Tw = Bw + 2 * z * h
-        R = Ar / P
-        R[P <= 0] = 0.0
-        Qn = np.sqrt(So) / mann_n * Ar * R ** (2 / 3)
-        self.Ar[:] = Ar
-        self.P[:] = P
-        self.R[:] = R
-        self.Tw[:] = Tw
-        self.Qn[:] = Qn
-
-    def compute_K_and_X(self, h, Q):
-        self.logger.info('Computing K and X...')
-        Bw = self.Bw
-        z = self.z
-        R = self.R
-        Tw = self.Tw
-        So = self.So
-        Ar = self.Ar
-        mann_n = self.mann_n
-        dt = self.dt
-        dx = self.dx
-        K = self.K
-        X = self.X
-        # c_k = (np.sqrt(So) / mann_n) * ( (5. / 3.) * R**(2. / 3.) -
-        #          ((2. / 3.) * R**(5. / 3.) * (2. * np.sqrt(1. + z**2)
-        #                                       / (Bw + 2 * h * z))))
-        # c_k = 1.67 * Q / Ar
-        # c_k = np.maximum(c_k, 0.)
-        # K[:] = dx / c_k
-        # cond = c_k > 0
-        # K[cond] = np.maximum(dt, dx[cond] / c_k[cond])
-        # K[~cond] = dt
-        X[:] = 0.29
-        # X[cond] = np.minimum(0.5, np.maximum(0.,
-        #           0.5 * (1 - (Q[cond] / (2. * Tw[cond] * So[cond]
-        #                                  * c_k[cond] * dx[cond])))))
-        # X[~cond] = 0.5
-        self.K = K
-        self.X = X
 
     def compute_alpha(self, K, X, dt):
         # TODO: Correct order in numerator?
