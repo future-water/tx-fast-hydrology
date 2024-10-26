@@ -10,7 +10,7 @@ import datetime
 from tx_fast_hydrology.nutils import interpolate_sample, _ax_bu
 from tx_fast_hydrology.simulation import ModelCollection
 from tx_fast_hydrology.callbacks import BaseCallback
-from tx_fast_hydrology.io import ModelEncoder, ModelDecoder
+from tx_fast_hydrology.io import load_model_file, dump_model_file
 from logging import DEBUG, INFO, WARNING, ERROR, CRITICAL
 
 MIN_SLOPE = 1e-8
@@ -28,7 +28,6 @@ class Muskingum:
         if name is None:
             self.name = str(uuid.uuid4())
         else:
-            assert isinstance(name, str)
             self.name = name
         self.logger = logging.getLogger(self.name)
         # Read json input file
@@ -154,6 +153,15 @@ class Muskingum:
     def dt(self):
         dt = float(self.timedelta.seconds)
         return dt
+
+    def load_model_file(self, file_path, load_optional=True):
+        obj = load_model_file(file_path, load_optional=load_optional)
+        for k, v in obj.items():
+            setattr(self, k, v)
+    
+    def dump_model_file(self, file_path, dump_optional=True):
+        obj = self.info
+        return dump_model_file(obj, file_path, dump_optional=dump_optional)
 
     def read_nhd_file(self, d):
         self.logger.info('Reading NHD file...')
