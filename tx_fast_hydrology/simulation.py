@@ -24,6 +24,21 @@ class ModelCollection():
         self.node_map = {index : model_dict[index]['node_map'] for index in model_dict}
         self.inputs = {index : model_dict[index]['input'] for index in model_dict}
 
+    @property
+    def info(self):
+        model_info = {
+            'outer_startnodes' : self.outer_startnodes,
+            'outer_endnodes' : self.outer_endnodes,
+            'startnode_indices' : self.startnode_indices,
+            'endnode_indices' : self.startnode_indices,
+            'outer_indegree' : self.outer_indegree,
+            'models' : self.models,
+            'terminal_nodes' : self.terminal_nodes,
+            'entry_nodes' : self.entry_nodes,
+            'node_map' : self.node_map
+        }
+        return model_info
+
     def load_states(self):
         for key in self.models:
             self.models[key].load_state()
@@ -48,6 +63,7 @@ class Simulation():
         self.outputs = {}
 
     def simulate(self):
+        raise NotImplementedError
         outer_startnodes = self.outer_startnodes
         outer_endnodes = self.outer_endnodes
         outer_indegree = self.outer_indegree
@@ -108,23 +124,22 @@ class AsyncSimulation(Simulation):
     def __init__(self, model_collection):
         return super().__init__(model_collection)
     
-    async def simulate(self, verbose=False):
+    async def simulate(self):
         indegree = self.outer_indegree.copy()
         indegree[self.outer_endnodes == self.outer_startnodes] -= 1
         self._indegree = indegree
-        m = len(self.models)
         try:
             asyncio.get_running_loop()
             loop_running = True
         except RuntimeError:
             loop_running = False
         if loop_running:
-            await self._main(verbose=verbose)
+            await self._main()
         else:
-            asyncio.run(self._main(verbose=verbose))
+            asyncio.run(self._main())
         return self.outputs
 
-    async def _main(self, verbose=False):
+    async def _main(self):
         indegree = self._indegree
         async with asyncio.TaskGroup() as taskgroup:
             for index, predecessors in enumerate(indegree):
@@ -132,10 +147,9 @@ class AsyncSimulation(Simulation):
                     model = self.models[index]
                     inputs = self.inputs[index]
                     taskgroup.create_task(self._simulate(taskgroup, model,
-                                                         inputs, index, 
-                                                         verbose))
+                                                         inputs, index))
 
-    async def _simulate(self, taskgroup, model, inputs, index, verbose=False):
+    async def _simulate(self, taskgroup, model, inputs, index):
         logger.debug(f'Started job for sub-watershed {index}')
         start_time = model.datetime
         outputs = {}
@@ -148,9 +162,9 @@ class AsyncSimulation(Simulation):
         outputs.index = pd.to_datetime(outputs.index, utc=True)
         outputs.columns = inputs.columns
         self.outputs[index] = outputs
-        taskgroup.create_task(self._accumulate(taskgroup, outputs, index, verbose))
+        taskgroup.create_task(self._accumulate(taskgroup, outputs, index))
 
-    async def _accumulate(self, taskgroup, outputs, index, verbose=False):
+    async def _accumulate(self, taskgroup, outputs, index):
         indegree = self._indegree
         startnode = index
         endnode = self.outer_endnodes[startnode]
@@ -174,7 +188,7 @@ class AsyncSimulation(Simulation):
             indegree[endnode] -= 1
             if (indegree[endnode] == 0):
                 taskgroup.create_task(self._simulate(taskgroup, model_end,
-                                                     inputs, endnode, verbose))
+                                                     inputs, endnode))
         logger.debug(f'Finished job for sub-watershed {index}')
 
 
