@@ -2,7 +2,6 @@ import datetime
 import asyncio
 import logging
 import multiprocessing as mp
-from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 import numpy as np
 import pandas as pd
 from tx_fast_hydrology.callbacks import BaseCallback
@@ -177,77 +176,6 @@ class AsyncSimulation(Simulation):
                 taskgroup.create_task(self._simulate(taskgroup, model_end,
                                                      inputs, endnode, verbose))
         logger.debug(f'Finished job for sub-watershed {index}')
-
-class MultiThreadedSimulation(AsyncSimulation):
-    def __init__(self, model_collection, max_workers=None):
-        super().__init__(model_collection)
-        self.max_workers = max_workers
-        self.executor = ThreadPoolExecutor(max_workers)
-
-    async def simulate(self, verbose=False):
-        indegree = self.outer_indegree.copy()
-        indegree[self.outer_endnodes == self.outer_startnodes] -= 1
-        self._indegree = indegree
-        m = len(self.models)
-        try:
-            loop = asyncio.get_running_loop()
-            self.loop = loop
-            loop_running = True
-        except RuntimeError:
-            loop_running = False
-            raise
-        await self._main(verbose=verbose)
-        self.flush_executor()
-        return self.outputs
-    
-    async def _main(self, verbose=False):
-        indegree = self._indegree
-        async with asyncio.TaskGroup() as taskgroup:
-            for index, predecessors in enumerate(indegree):
-                if predecessors == 0:
-                    model = self.models[index]
-                    inputs = self.inputs[index]
-                    taskgroup.create_task(self._simulate(taskgroup, model,
-                                                         inputs, index,
-                                                         verbose))
-
-    async def _simulate(self, taskgroup, model, inputs, index, loop, verbose=False):
-        logger.debug(f'Started job for sub-watershed {index}')
-        executor = self.executor
-        loop = self.loop
-        outputs, model_post = await loop.run_in_executor(executor, _inner_simulation,
-                                                         model, inputs)
-        self.outputs[index] = outputs
-        model.saved_states.update(model_post.saved_states)
-        taskgroup.create_task(self._accumulate(taskgroup, outputs, index, verbose))
-
-    def flush_executor(self):
-        self.executor.shutdown()
-        self.executor = ThreadPoolExecutor(self.max_workers)
-
-class MultiProcessSimulation(MultiThreadedSimulation):
-    def __init__(self, model_collection, max_workers=None):
-        super().__init__(model_collection)
-        self.max_workers = max_workers
-        self.executor = ProcessPoolExecutor(max_workers)
-
-    def flush_executor(self):
-        self.executor.shutdown()
-        self.executor = ProcessPoolExecutor(self.max_workers)
-
-
-def _inner_simulation(model, inputs):
-    start_time = model.datetime
-    outputs = {}
-    outputs[start_time] = model.o_t_next
-    for state in model.simulate_iter(inputs, inc_t=True):
-        current_time = state.datetime
-        o_t_next = state.o_t_next
-        outputs[current_time] = o_t_next
-    outputs = pd.DataFrame.from_dict(outputs, orient='index')
-    outputs.index = pd.to_datetime(outputs.index, utc=True)
-    outputs.columns = inputs.columns
-    return outputs, model
 
 
 class CheckPoint(BaseCallback):

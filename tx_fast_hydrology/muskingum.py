@@ -421,6 +421,9 @@ class Muskingum:
     def unbind_callback(self, key):
         return self.callbacks.pop(key)
 
+    def copy(self):
+        return copy.deepcopy(self)
+
     def split(self, indices, inputs, create_state_space=True):
         self = copy.deepcopy(self)
         startnode_indices = np.asarray([np.flatnonzero(self.startnodes == i).item()
