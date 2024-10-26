@@ -11,7 +11,8 @@ PROCESSES = mp.cpu_count() - 1
 logger = logging.getLogger(__name__)
 
 class ModelCollection():
-    def __init__(self, model_dict, outer_startnodes, outer_endnodes, startnode_indices, endnode_indices):
+    def __init__(self, model_dict, outer_startnodes, outer_endnodes, 
+                 startnode_indices, endnode_indices):
         self.outer_startnodes = outer_startnodes
         self.outer_endnodes = outer_endnodes
         self.startnode_indices = startnode_indices
@@ -22,7 +23,6 @@ class ModelCollection():
         self.terminal_nodes = {index : model_dict[index]['terminal_node'] for index in model_dict}
         self.entry_nodes = {index : model_dict[index]['entry_node'] for index in model_dict}
         self.node_map = {index : model_dict[index]['node_map'] for index in model_dict}
-        self.inputs = {index : model_dict[index]['input'] for index in model_dict}
 
     @property
     def info(self):
@@ -49,7 +49,7 @@ class ModelCollection():
 
 
 class Simulation():
-    def __init__(self, model_collection):
+    def __init__(self, model_collection, inputs):
         self.model_collection = model_collection
         self.outer_startnodes = model_collection.outer_startnodes
         self.outer_endnodes = model_collection.outer_endnodes
@@ -59,8 +59,14 @@ class Simulation():
         self.terminal_nodes = model_collection.terminal_nodes
         self.entry_nodes = model_collection.entry_nodes
         self.node_map = model_collection.node_map
-        self.inputs = model_collection.inputs
+        self.inputs = self.read_inputs(inputs)
         self.outputs = {}
+
+    def read_inputs(self, inputs):
+        input_collection = {}
+        for index, model in self.models.items():
+            input_collection[index] = inputs[model.reach_ids].copy()
+        return input_collection
 
     def simulate(self):
         raise NotImplementedError
@@ -121,8 +127,8 @@ class Simulation():
         self.model_collection.save_states()
 
 class AsyncSimulation(Simulation):
-    def __init__(self, model_collection):
-        return super().__init__(model_collection)
+    def __init__(self, model_collection, inputs):
+        return super().__init__(model_collection, inputs)
     
     async def simulate(self):
         indegree = self.outer_indegree.copy()
@@ -154,7 +160,7 @@ class AsyncSimulation(Simulation):
         start_time = model.datetime
         outputs = {}
         outputs[start_time] = model.o_t_next
-        for state in model.simulate_iter(inputs, inc_t=True):
+        for state in model.simulate_iter(inputs):
             current_time = state.datetime
             o_t_next = state.o_t_next
             outputs[current_time] = o_t_next
@@ -178,6 +184,7 @@ class AsyncSimulation(Simulation):
             index_in = self.node_map[endnode][entry_node]
             reach_id_out = model_start.reach_ids[index_out]
             reach_id_in = model_end.reach_ids[index_in]
+            # TODO: This seems fragile
             i_t_prev = outputs[reach_id_out].shift(1).iloc[1:].fillna(0.)
             i_t_next = outputs[reach_id_out].iloc[1:]
             gamma_in = model_end.gamma[index_in]

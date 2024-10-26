@@ -424,7 +424,7 @@ class Muskingum:
     def copy(self):
         return copy.deepcopy(self)
 
-    def split(self, indices, inputs, create_state_space=True):
+    def split(self, indices, create_state_space=True):
         self = copy.deepcopy(self)
         startnode_indices = np.asarray([np.flatnonzero(self.startnodes == i).item()
                                         for i in indices])
@@ -498,7 +498,6 @@ class Muskingum:
             sub_model.save_state()
             components[component]['model'] = sub_model
             components[component]['node_map'] = node_map
-            components[component]['input'] = inputs[sub_model.reach_ids].copy()
         # Create connections between sub-watersheds
         for component in range(n_components):
             startnode = outer_startnodes[component]
