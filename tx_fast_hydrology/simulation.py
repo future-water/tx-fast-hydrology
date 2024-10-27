@@ -1,34 +1,14 @@
+import os
 import datetime
 import asyncio
 import logging
 import uuid
+import json
 import numpy as np
 import pandas as pd
 from tx_fast_hydrology.callbacks import BaseCallback
 
 logger = logging.getLogger(__name__)
-
-class ModelCollection():
-    def __init__(self, models, name=None):
-        self.models = {model.name : model for model in models}
-        if name is None:
-            self.name = str(uuid.uuid4())
-        else:
-            self.name = name
-
-    @property
-    def info(self):
-        model_info = {}
-        return model_info
-
-    def load_states(self):
-        for key in self.models:
-            self.models[key].load_state()
-
-    def save_states(self):
-        for key in self.models:
-            self.models[key].save_state()
-
 
 class Simulation():
     def __init__(self, model_collection, inputs):

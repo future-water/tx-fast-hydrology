@@ -1,3 +1,4 @@
+import os
 import uuid
 import copy
 import logging
@@ -7,9 +8,8 @@ import numpy as np
 import pandas as pd
 import datetime
 from tx_fast_hydrology.nutils import interpolate_sample, _ax_bu
-from tx_fast_hydrology.simulation import ModelCollection
 from tx_fast_hydrology.callbacks import BaseCallback
-from tx_fast_hydrology.io import load_model_file, dump_model_file, load_nhd_geojson
+from tx_fast_hydrology.io import ModelDecoder, ModelEncoder
 from logging import DEBUG, INFO, WARNING, ERROR, CRITICAL
 
 MIN_SLOPE = 1e-8
@@ -190,8 +190,14 @@ class Muskingum:
         return dump_model_file(obj, file_path, dump_optional=dump_optional)
 
     @classmethod
-    def from_nhd_geojson(cls, data, **kwargs):
-        parsed_data = load_nhd_geojson(data)
+    def from_model_file(cls, file_path, load_optional=True, **kwargs):
+        obj = load_model_file(file_path, load_optional=load_optional)
+        newinstance = cls(obj, **kwargs)
+        return newinstance
+
+    @classmethod
+    def from_nhd_geojson(cls, file_path, **kwargs):
+        parsed_data = load_nhd_geojson(file_path)
         newinstance = cls(parsed_data, **kwargs)
         return newinstance
 
@@ -530,6 +536,175 @@ class Muskingum:
         models = [components[component]['model'] for component in components]
         model_collection = ModelCollection(models, name=name)
         return model_collection
+
+
+class ModelCollection():
+    def __init__(self, models, name=None):
+        self.models = {model.name : model for model in models}
+        if name is None:
+            self.name = str(uuid.uuid4())
+        else:
+            self.name = name
+
+    @property
+    def info(self):
+        model_info = {}
+        return model_info
+
+    def load_states(self):
+        for key in self.models:
+            self.models[key].load_state()
+
+    def save_states(self):
+        for key in self.models:
+            self.models[key].save_state()
+
+    def dump_model_collection(self, file_path, model_file_paths={}, dump_optional=True):
+        model_collection_info = []
+        for model_name, model in self.models.items():
+            file_path_stem = os.path.splitext(file_path)[0]
+            default_file_path = f'{file_path_stem}.{model_name}.inp'
+            model_file_paths[model_name] = model_file_paths.setdefault(model_name, default_file_path)
+        for model_name, model in self.models.items():
+            model_file_path = model_file_paths[model_name]
+            model.dump_model_file(model_file_path, dump_optional=dump_optional)
+            model_collection_info.append({
+                'model' : os.path.abspath(model_file_path),
+                'sinks' : [{'model' : model.sinks[sink]['model'].name,
+                            'exit_node' : int(model.sinks[sink]['exit_node'])}
+                             for sink in model.sinks],
+                'sources' : [{'model' : model.sources[source]['model'].name,
+                            'entry_node' : int(model.sources[source]['entry_node'])}
+                             for source in model.sources]
+                             })
+        with open(file_path, 'w') as f:
+            json.dump(model_collection_info, f)
+
+    @classmethod
+    def from_file(cls, file_path, load_optional=True, **kwargs):
+        models = load_model_collection(file_path, load_optional=load_optional)
+        newinstance = cls(models, **kwargs)
+        return newinstance
+
+
+def load_model_file(file_path, load_optional=True):
+    required_fields = {'name', 'datetime', 'timedelta', 'reach_ids',
+     'startnodes', 'endnodes', 'K', 'X', 'o_t'}
+    with open(file_path, 'r') as f:
+        obj = json.load(f, cls=ModelDecoder)
+    try:
+        assert required_fields.issubset(set(obj.keys()))
+    except:
+        raise ValueError(f'Model field must contain fields {required_fields}')
+    obj['startnodes'] = np.asarray(obj['startnodes'], dtype=np.int64)
+    obj['endnodes'] = np.asarray(obj['endnodes'], dtype=np.int64)
+    obj['K'] = np.asarray(obj['K'], dtype=np.float64)
+    obj['X'] = np.asarray(obj['X'], dtype=np.float64)
+    obj['o_t'] = np.asarray(obj['o_t'], dtype=np.float64)
+    try:
+        assert (obj['startnodes'].size == obj['endnodes'].size 
+                == obj['K'].size == obj['X'].size == obj['o_t'].size)
+        obj['n'] = obj['startnodes'].size
+    except:
+        raise ValueError('Arrays are not the same length')
+    if load_optional:
+        return obj
+    else:
+        obj = {k : v for k, v in obj.items()
+               if not k in required_fields}
+        return obj
+
+
+def dump_model_file(obj, file_path, dump_optional=True):
+    required_fields = {'name', 'datetime', 'timedelta', 'reach_ids',
+     'startnodes', 'endnodes', 'K', 'X', 'o_t'}
+    with open(file_path, 'w') as f:
+        if dump_optional:
+            to_dump = obj
+        else:
+            to_dump = {k : v for k, v in obj.items()
+                        if k in required_fields}
+        json.dump(to_dump, f, cls=ModelEncoder)
+
+
+def load_nhd_geojson(file_path):
+    with open(file_path, 'r') as f:
+        d = json.load(f)
+    node_ids = [i['attributes']['COMID'] for i in d['features']]
+    link_ids = [i['attributes']['COMID'] for i in d['features']]
+    paths = [np.asarray(i['geometry']['paths']) for i in d['features']]
+    reach_ids = link_ids
+    reach_ids = [str(x) for x in reach_ids]
+    source_node_ids = [i['attributes']['COMID'] for i in d['features']]
+    target_node_ids = [i['attributes']['toCOMID'] for i in d['features']]
+    dx = np.asarray([i['attributes']['Shape_Length'] for i in d['features']]) #* 1000 # km to m
+    # NOTE: node_ids and source_node_ids should always be the same for NHD
+    # But not necessarily so for original json files
+    node_ids = node_ids
+    source_node_ids = source_node_ids
+    target_node_ids = target_node_ids
+    self_loops = []
+    node_index_map = pd.Series(np.arange(len(node_ids)), index=node_ids)
+    startnodes = node_index_map.reindex(source_node_ids, fill_value=-1).values
+    endnodes = node_index_map.reindex(target_node_ids, fill_value=-1).values
+    for i in range(len(startnodes)):
+        if endnodes[i] == -1:
+            self_loops.append(i)
+            endnodes[i] = startnodes[i]
+    n = startnodes.size
+    obj = {
+        'name' : str(uuid.uuid4()),
+        'datetime' : DEFAULT_START_TIME,
+        'timedelta' : DEFAULT_TIMEDELTA,
+        'reach_ids' : reach_ids,
+        'startnodes' : startnodes,
+        'endnodes' : endnodes,
+        'K' : 3600 * np.ones(n, dtype=np.float64),
+        'X' : 0.29 * np.ones(n, dtype=np.float64),
+        'o_t' : 1e-3 * np.ones(n, dtype=np.float64),
+        'dx' : dx,
+        'paths' : paths
+    }
+    return obj
+
+
+def load_model_collection(file_path, load_optional=True):
+    models = {}
+    sinks = {}
+    sources = {}
+    with open(file_path, 'r') as f:
+        model_collection_info = json.load(f)
+    for model_info in model_collection_info:
+        model_file_path = model_info['model']
+        model = Muskingum.from_model_file(model_file_path, load_optional=load_optional)
+        models[model.name] = model
+        sinks[model.name] = model_info['sinks']
+        sources[model.name] = model_info['sources']
+    for model_name, model_sinks in sinks.items():
+        upstream_model = models[model_name]
+        for sink in model_sinks:
+            downstream_model = models[sink['model']]
+            exit_node = sink['exit_node']
+            upstream_model.sinks.update({
+                downstream_model.name : {
+                    'model' : downstream_model,
+                    'exit_node' : exit_node
+                }
+            })
+    for model_name, model_sources in sources.items():
+        downstream_model = models[model_name]
+        for source in model_sources:
+            upstream_model = models[source['model']]
+            entry_node = source['entry_node']
+            downstream_model.sources.update({
+                upstream_model.name : {
+                    'model' : upstream_model,
+                    'entry_node' : entry_node
+                }
+            })
+    models = list(models.values())
+    return models
+
 
 def _solve_normal_depth(h, Q, B, z, mann_n, So):
     Q_computed = _Q(h, Q, B, z, mann_n, So)
