@@ -1,6 +1,7 @@
 import datetime
 import asyncio
 import logging
+import uuid
 import multiprocessing as mp
 import numpy as np
 import pandas as pd
@@ -12,28 +13,28 @@ logger = logging.getLogger(__name__)
 
 class ModelCollection():
     def __init__(self, model_dict, outer_startnodes, outer_endnodes, 
-                 startnode_indices, endnode_indices):
+                 name=None):
         self.outer_startnodes = outer_startnodes
         self.outer_endnodes = outer_endnodes
-        self.startnode_indices = startnode_indices
-        self.endnode_indices = endnode_indices
         self.outer_indegree = np.bincount(outer_endnodes, minlength=outer_endnodes.size)
         self._indegree = self.outer_indegree.copy()
         self.models = {index : model_dict[index]['model'] for index in model_dict}
-        self.terminal_nodes = {index : model_dict[index]['terminal_node'] for index in model_dict}
+        self.exit_nodes = {index : model_dict[index]['exit_node'] for index in model_dict}
         self.entry_nodes = {index : model_dict[index]['entry_node'] for index in model_dict}
         self.node_map = {index : model_dict[index]['node_map'] for index in model_dict}
+        if name is None:
+            self.name = str(uuid.uuid4())
+        else:
+            self.name = name
 
     @property
     def info(self):
         model_info = {
             'outer_startnodes' : self.outer_startnodes,
             'outer_endnodes' : self.outer_endnodes,
-            'startnode_indices' : self.startnode_indices,
-            'endnode_indices' : self.startnode_indices,
             'outer_indegree' : self.outer_indegree,
             'models' : self.models,
-            'terminal_nodes' : self.terminal_nodes,
+            'exit_nodes' : self.exit_nodes,
             'entry_nodes' : self.entry_nodes,
             'node_map' : self.node_map
         }
@@ -56,7 +57,7 @@ class Simulation():
         self.outer_indegree = model_collection.outer_indegree
         self._indegree = model_collection._indegree
         self.models = model_collection.models
-        self.terminal_nodes = model_collection.terminal_nodes
+        self.exit_nodes = model_collection.exit_nodes
         self.entry_nodes = model_collection.entry_nodes
         self.node_map = model_collection.node_map
         self.inputs = self.read_inputs(inputs)
@@ -126,6 +127,7 @@ class Simulation():
     def save_states(self):
         self.model_collection.save_states()
 
+
 class AsyncSimulation(Simulation):
     def __init__(self, model_collection, inputs):
         return super().__init__(model_collection, inputs)
@@ -178,10 +180,8 @@ class AsyncSimulation(Simulation):
             model_start = self.models[startnode]
             model_end = self.models[endnode]
             inputs = self.inputs[endnode]
-            terminal_node = self.terminal_nodes[startnode]
-            entry_node = self.entry_nodes[startnode]
-            index_out = self.node_map[startnode][terminal_node]
-            index_in = self.node_map[endnode][entry_node]
+            index_out = model_start.sinks[model_end.name]['exit_node']
+            index_in = model_end.sources[model_start.name]['entry_node']
             reach_id_out = model_start.reach_ids[index_out]
             reach_id_in = model_end.reach_ids[index_in]
             # TODO: This seems fragile

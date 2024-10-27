@@ -22,6 +22,8 @@ class Muskingum:
         self.sparse = sparse
         self.callbacks = {}
         self.saved_states = {}
+        self.sinks = {}
+        self.sources = {}
         # Read json input file
         if isinstance(data, dict):
             self.load_model(data, load_optional=load_optional)
@@ -424,7 +426,7 @@ class Muskingum:
     def copy(self):
         return copy.deepcopy(self)
 
-    def split(self, indices, create_state_space=True):
+    def split(self, indices, name=None, create_state_space=True):
         self = copy.deepcopy(self)
         startnode_indices = np.asarray([np.flatnonzero(self.startnodes == i).item()
                                         for i in indices])
@@ -459,7 +461,6 @@ class Muskingum:
         outer_endnodes = np.asarray(new_outer_endnodes, dtype=int)
         startnode_indices = np.asarray(new_startnode_indices, dtype=int)
         endnode_indices = np.asarray(new_endnode_indices, dtype=int)
-        outer_indegree = np.bincount(outer_endnodes, minlength=outer_endnodes.size)
         # Create sub-watershed models
         components = {}
         for component in range(n_components):
@@ -506,7 +507,7 @@ class Muskingum:
             downstream_node_map = components[endnode]['node_map']
             startnode_index = startnode_indices[component]
             endnode_index = endnode_indices[component]
-            components[startnode]['terminal_node'] = startnode_index
+            components[startnode]['exit_node'] = startnode_index
             components[startnode]['entry_node'] = endnode_index
             if (startnode_index >= 0) and (endnode_index >= 0):
                 upstream_model = components[startnode]['model']
@@ -515,9 +516,19 @@ class Muskingum:
                 entry_index = downstream_node_map[endnode_index]
                 downstream_model.indegree[entry_index] -= 1
                 downstream_model.i_t_next[entry_index] -= upstream_model.o_t_next[exit_index]
+                # Fill in sink and source objects
+                upstream_model.sinks.update({downstream_model.name : 
+                {
+                    'model' : downstream_model,
+                    'exit_node' : exit_index
+                }})
+                downstream_model.sources.update({upstream_model.name : 
+                {
+                    'model' : upstream_model,
+                    'entry_node' : entry_index
+                }})
         model_collection = ModelCollection(components, outer_startnodes,
-                                           outer_endnodes, startnode_indices,
-                                           endnode_indices)
+                                           outer_endnodes, name=name)
         return model_collection
 
 def _solve_normal_depth(h, Q, B, z, mann_n, So):
