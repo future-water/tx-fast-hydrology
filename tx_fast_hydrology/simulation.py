@@ -2,12 +2,9 @@ import datetime
 import asyncio
 import logging
 import uuid
-import multiprocessing as mp
 import numpy as np
 import pandas as pd
 from tx_fast_hydrology.callbacks import BaseCallback
-
-PROCESSES = mp.cpu_count() - 1
 
 logger = logging.getLogger(__name__)
 
