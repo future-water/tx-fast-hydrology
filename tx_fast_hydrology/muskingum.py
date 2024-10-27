@@ -527,8 +527,8 @@ class Muskingum:
                     'model' : upstream_model,
                     'entry_node' : entry_index
                 }})
-        model_collection = ModelCollection(components, outer_startnodes,
-                                           outer_endnodes, name=name)
+        models = [components[component]['model'] for component in components]
+        model_collection = ModelCollection(models, name=name)
         return model_collection
 
 def _solve_normal_depth(h, Q, B, z, mann_n, So):

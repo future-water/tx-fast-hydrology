@@ -12,16 +12,8 @@ PROCESSES = mp.cpu_count() - 1
 logger = logging.getLogger(__name__)
 
 class ModelCollection():
-    def __init__(self, model_dict, outer_startnodes, outer_endnodes, 
-                 name=None):
-        self.outer_startnodes = outer_startnodes
-        self.outer_endnodes = outer_endnodes
-        self.outer_indegree = np.bincount(outer_endnodes, minlength=outer_endnodes.size)
-        self._indegree = self.outer_indegree.copy()
-        self.models = {index : model_dict[index]['model'] for index in model_dict}
-        self.exit_nodes = {index : model_dict[index]['exit_node'] for index in model_dict}
-        self.entry_nodes = {index : model_dict[index]['entry_node'] for index in model_dict}
-        self.node_map = {index : model_dict[index]['node_map'] for index in model_dict}
+    def __init__(self, models, name=None):
+        self.models = {model.name : model for model in models}
         if name is None:
             self.name = str(uuid.uuid4())
         else:
@@ -29,15 +21,7 @@ class ModelCollection():
 
     @property
     def info(self):
-        model_info = {
-            'outer_startnodes' : self.outer_startnodes,
-            'outer_endnodes' : self.outer_endnodes,
-            'outer_indegree' : self.outer_indegree,
-            'models' : self.models,
-            'exit_nodes' : self.exit_nodes,
-            'entry_nodes' : self.entry_nodes,
-            'node_map' : self.node_map
-        }
+        model_info = {}
         return model_info
 
     def load_states(self):
@@ -52,14 +36,7 @@ class ModelCollection():
 class Simulation():
     def __init__(self, model_collection, inputs):
         self.model_collection = model_collection
-        self.outer_startnodes = model_collection.outer_startnodes
-        self.outer_endnodes = model_collection.outer_endnodes
-        self.outer_indegree = model_collection.outer_indegree
-        self._indegree = model_collection._indegree
         self.models = model_collection.models
-        self.exit_nodes = model_collection.exit_nodes
-        self.entry_nodes = model_collection.entry_nodes
-        self.node_map = model_collection.node_map
         self.inputs = self.read_inputs(inputs)
         self.outputs = {}
 
@@ -133,9 +110,6 @@ class AsyncSimulation(Simulation):
         return super().__init__(model_collection, inputs)
     
     async def simulate(self):
-        indegree = self.outer_indegree.copy()
-        indegree[self.outer_endnodes == self.outer_startnodes] -= 1
-        self._indegree = indegree
         try:
             asyncio.get_running_loop()
             loop_running = True
@@ -148,17 +122,19 @@ class AsyncSimulation(Simulation):
         return self.outputs
 
     async def _main(self):
-        indegree = self._indegree
+        indegree = {model.name : len(model.sources) for model 
+                    in self.model_collection.models.values()}
+        self._indegree = indegree
         async with asyncio.TaskGroup() as taskgroup:
-            for index, predecessors in enumerate(indegree):
+            for name, predecessors in indegree.items():
                 if predecessors == 0:
-                    model = self.models[index]
-                    inputs = self.inputs[index]
+                    model = self.models[name]
+                    inputs = self.inputs[name]
                     taskgroup.create_task(self._simulate(taskgroup, model,
-                                                         inputs, index))
+                                                         inputs, name))
 
-    async def _simulate(self, taskgroup, model, inputs, index):
-        logger.debug(f'Started job for sub-watershed {index}')
+    async def _simulate(self, taskgroup, model, inputs, name):
+        logger.debug(f'Started job for sub-watershed {name}')
         start_time = model.datetime
         outputs = {}
         outputs[start_time] = model.o_t_next
@@ -169,34 +145,35 @@ class AsyncSimulation(Simulation):
         outputs = pd.DataFrame.from_dict(outputs, orient='index')
         outputs.index = pd.to_datetime(outputs.index, utc=True)
         outputs.columns = inputs.columns
-        self.outputs[index] = outputs
-        taskgroup.create_task(self._accumulate(taskgroup, outputs, index))
+        self.outputs[name] = outputs
+        taskgroup.create_task(self._accumulate(taskgroup, outputs, name))
 
-    async def _accumulate(self, taskgroup, outputs, index):
+    async def _accumulate(self, taskgroup, outputs, name):
         indegree = self._indegree
-        startnode = index
-        endnode = self.outer_endnodes[startnode]
-        if startnode != endnode:
-            model_start = self.models[startnode]
-            model_end = self.models[endnode]
-            inputs = self.inputs[endnode]
-            index_out = model_start.sinks[model_end.name]['exit_node']
-            index_in = model_end.sources[model_start.name]['entry_node']
-            reach_id_out = model_start.reach_ids[index_out]
-            reach_id_in = model_end.reach_ids[index_in]
-            # TODO: This seems fragile
-            i_t_prev = outputs[reach_id_out].shift(1).iloc[1:].fillna(0.)
-            i_t_next = outputs[reach_id_out].iloc[1:]
-            gamma_in = model_end.gamma[index_in]
-            alpha_in = model_end.alpha[index_in]
-            beta_in = model_end.beta[index_in]
-            inputs.loc[:, reach_id_in] += (alpha_in * i_t_next.values / gamma_in
-                                        + beta_in * i_t_prev.values / gamma_in)
-            indegree[endnode] -= 1
-            if (indegree[endnode] == 0):
-                taskgroup.create_task(self._simulate(taskgroup, model_end,
-                                                     inputs, endnode))
-        logger.debug(f'Finished job for sub-watershed {index}')
+        startnode = name
+        model_start = self.models[startnode]
+        endnodes = model_start.sinks.keys()
+        for endnode in endnodes:
+            if startnode != endnode:
+                model_end = self.models[endnode]
+                inputs = self.inputs[endnode]
+                index_out = model_start.sinks[model_end.name]['exit_node']
+                index_in = model_end.sources[model_start.name]['entry_node']
+                reach_id_out = model_start.reach_ids[index_out]
+                reach_id_in = model_end.reach_ids[index_in]
+                # TODO: This seems fragile
+                i_t_prev = outputs[reach_id_out].shift(1).iloc[1:].fillna(0.)
+                i_t_next = outputs[reach_id_out].iloc[1:]
+                gamma_in = model_end.gamma[index_in]
+                alpha_in = model_end.alpha[index_in]
+                beta_in = model_end.beta[index_in]
+                inputs.loc[:, reach_id_in] += (alpha_in * i_t_next.values / gamma_in
+                                            + beta_in * i_t_prev.values / gamma_in)
+                indegree[endnode] -= 1
+                if (indegree[endnode] == 0):
+                    taskgroup.create_task(self._simulate(taskgroup, model_end,
+                                                        inputs, endnode))
+        logger.debug(f'Finished job for sub-watershed {name}')
 
 
 class CheckPoint(BaseCallback):
