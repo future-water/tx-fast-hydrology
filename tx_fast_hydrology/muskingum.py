@@ -18,6 +18,124 @@ DEFAULT_START_TIME = pd.to_datetime(0., utc=True)
 DEFAULT_TIMEDELTA = pd.to_timedelta(3600, unit='s')
 
 class Muskingum:
+    """
+    Base class for implementing Muskingum routing.
+
+    Inputs:
+    -------
+    data : dict
+        JSON-like object containing data needed to instantiate the Muskingum model.
+        {
+            'name' : (str)
+                The name of the model instance.
+            'datetime' : (pandas.DateTime)
+                The starting timestamp of the model.
+            'timedelta' : (pandas.TimeDelta)
+                The timestep of the model.
+            'reach_ids' : (list, dtype str)
+                The identifiers for each reach (e.g. NWM COMIDS)
+            'startnodes' : (numpy.ndarray, dtype int64)
+                The numeric index of each reach.
+            'endnodes' : (np.ndarray, dtype int64)
+                The index of the reaches downstream of each reach in `startnodes`.
+            'K' : (np.ndarray, dtype float64)
+                Muskingum travel time parameters for each reach [s].
+            'X' : (np.ndarray, dtype float64)
+                Muskingum attenuation parameters for each reach [unitless].
+            'o_t' : (np.ndarray, dtype float64) [optional]
+                Starting outflows from each reach at time `datetime` [m^3 / s].
+            'dx' : (np.ndarray, dtype float64) [optional]
+                Length of each reach [m].
+            'paths' : (list of lists) [optional]
+                Geometric data for plotting the stream network
+        }
+    
+    load_optional : bool
+        If True, load optional paramters `o_t`, `dx`, and `paths`. 
+    
+    create_state_space : bool
+        If True, populate matrices A and B for the state space equation:
+            x_t+1 = A @ x_t + B @ u_t
+
+    sparse: bool
+        If True, use sparse matrices for the state space equation and covariance matrices.
+
+    Attributes:
+    -----------
+    States:
+
+    o_t_next : np.ndarray, dtype float64
+        Outflows from each reach at current timestep [m^3 / s]
+    i_t_next : np.ndarray, dtype float64
+        Inflows to each reach at current timestep [m^3 / s]
+    o_t_prev : np.ndarray, dtype float64
+        Outflows from each reach at previous timestep [m^3 / s]
+    i_t_prev : np.ndarray, dtype float64
+        Inflows to each reach at previous timestep [m^3 / s]
+
+    Parameters:
+
+    n : int
+        Number of reaches
+    datetime : pd.DateTime
+        Current timestamp of the model in UTC time.
+    timedelta : pd.TimeDelta
+        Timestep of the model as a timedelta object.
+    dt : float
+        Timestep of the model in seconds.
+    K : np.ndarray, dtype float64
+        Muskingum travel time paramters for each reach [s].
+    X : np.ndarray, dtype float64
+        Muskingum attenuation parameters for each reach [unitless].
+    dx : (np.ndarray, dtype float64)
+        Length of each reach [m].
+    paths : (list of lists)
+        Geometric data for plotting the stream network
+
+    Structures:
+
+    sinks : dict of dicts
+        Describes downstream connectivity of model. Each internal dict is structed as follows:
+        {
+            model : Muskingum instance
+                Downstream model that model instance feeds into.
+            exit_node : int
+                Index of the reach at which flow leaves the model. 
+        }
+
+    sources : dict of dicts
+        Describes upstream connectivity of model. Each internal dict is structed as follows:
+        {
+            model : Muskingum instance
+                Upstream model that feeds into model instance.
+            entry_node : int
+                Index of the reach at which flow enters the model. 
+        }
+
+    saved_states : dict
+        Saved states from current or previous timestep.
+
+    callbacks : dict
+        A dictionary of callback functions that may be applied to methods like step and simulate.
+
+    A : np.ndarray, dtype float64
+        State-space state transition matrix A.
+
+    B : np.ndarray, dtype float64
+        State-space input matrix B.
+
+    Methods:
+    -----------
+    step : Steps model forward in time by one timestep.
+    simulate : Simulates model by stepping forward in time over a given time range.
+    save_state : Saves current state to an internal dictionary.
+    load_state : Loads state from internal dictionary.
+    plot : Plots stream network using matplotlib.
+    copy : Returns a copy of the model instance using copy.deepcopy.
+    bind_callback : Bind a callback to the model.
+    unbind_callback : Remove a callback from the model.
+    split : Splits the model into multiple interconnected submodels.
+    """
     def __init__(self, data, load_optional=True, create_state_space=False, sparse=False):
         self.sparse = sparse
         self.callbacks = {}
