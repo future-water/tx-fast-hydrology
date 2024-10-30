@@ -418,7 +418,7 @@ class Muskingum:
         else:
             self.i_t_next[:] = i_t_next[:]
 
-    def step(self, p_t_next, num_iter=1, inc_t=False):
+    def step_matrix(self, p_t_next, num_iter=1, inc_t=False):
         raise NotImplementedError
         A = self.A
         B = self.B
@@ -432,7 +432,7 @@ class Muskingum:
             self.t += dt
             self.datetime += self.timedelta
 
-    def step_iter(self, p_t_next, timedelta=None, inc_t=True):
+    def step_iter(self, p_t_next, timedelta=None):
         if timedelta is None:
             timedelta = self.timedelta
             dt = self.dt
@@ -464,7 +464,25 @@ class Muskingum:
             callback.__on_step_end__()
         self.logger.debug(f'Stepped to time {self.datetime}')
 
-    def simulate(self, dataframe, **kwargs):
+    def step(self, p_t_next, timedelta=None):
+        """
+        Advances model forward in time by one timestep, producing new estimates of
+        outflows `o_t_next`, and inflows `i_t_next`.
+
+        Inputs
+        ------
+        p_t_next : np.ndarray, dtype float64
+            Array of lateral inputs at each reach (e.g. runoff + recharge)
+        timedelta : pd.TimeDelta
+            Timestep of step. Defaults to self.timedelta
+
+        Returns:
+        --------
+        None
+        """
+        return self.step_iter(p_t_next, timedelta=timedelta)
+
+    def simulate_matrix(self, dataframe, **kwargs):
         raise NotImplementedError
         assert isinstance(dataframe.index, pd.core.indexes.datetimes.DatetimeIndex)
         # assert (dataframe.index.tz == datetime.timezone.utc)
@@ -516,6 +534,35 @@ class Muskingum:
         # Execute post-simulation callbacks
         for _, callback in self.callbacks.items():
             callback.__on_simulation_end__()
+
+    def simulate(self, dataframe, start_time=None, end_time=None, o_t_init=None, **kwargs):
+        """
+        Advances model forward in time over a specified time range, producing successive
+        new estimates of `o_t_next` and `i_t_next` at each timestep.
+
+        Inputs
+        ------
+        dataframe : pd.DataFrame, dtype float64
+            Dataframe of lateral inputs at each reach (e.g. runoff + recharge).
+            Column labels must contain each `reach_id` in the model.
+            Index must be of type pd.DateTime with UTC timezone.
+            
+        start_time : pd.DateTime
+            Starting time of the simulation. Defaults to self.datetime.
+
+        end_time : pd.DateTime
+            Ending time of the simulation. Defaults to the last timestamp in the provided dataframe.
+
+        o_t_init : np.ndarray, dtype float64
+            Initial outflow states at start of simulation. Defaults to self.o_t_next.
+
+        Returns:
+        --------
+        self : Muskingum
+            Yields model instance at each timestep for inspection.
+        """
+        return self.simulate_iter(dataframe, start_time=start_time, 
+                                  end_time=end_time, o_t_init=o_t_init, **kwargs)
 
     def save_state(self):
         self.logger.info(f'Saving state for model {self.name} at time {self.datetime}...')
