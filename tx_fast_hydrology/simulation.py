@@ -81,6 +81,9 @@ class Simulation():
     def save_states(self):
         self.model_collection.save_states()
 
+    def init_states(self, streamflow):
+        self.model_collection.init_states(streamflow)
+
 
 class AsyncSimulation(Simulation):
     def __init__(self, model_collection, inputs):

@@ -724,6 +724,17 @@ class ModelCollection():
         for key in self.models:
             self.models[key].save_state()
 
+    def set_datetime(self, timestamp):
+        for key in self.models:
+            self.models[key].datetime = timestamp
+
+    def init_states(self, streamflow):
+        for key in self.models:
+            model = self.models[key]
+            reach_ids = model.reach_ids
+            model_states = streamflow[reach_ids]
+            model.init_states(o_t_next=model_states)
+
     def dump_model_collection(self, file_path, model_file_paths={}, dump_optional=True):
         model_collection_info = []
         for model_name, model in self.models.items():

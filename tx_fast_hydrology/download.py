@@ -1,6 +1,5 @@
 import os
 import time
-import datetime
 import pathlib
 import io
 import re
@@ -55,13 +54,27 @@ def get_forecast_path(nwm_dirs):
     return url, forecast_hour
 
 
+def download_streamflow(nwm_dir, forecast_hour, comids, sleeptime=0.1):
+        # TODO: Should this include tm01 and tm02 as well?
+        nc_url = f'analysis_assim/nwm.t{forecast_hour:02}z.analysis_assim.channel_rt.tm00.conus.nc'
+        url = os.path.join(nwm_dir, nc_url)
+        response = requests.get(url)
+        if response.status_code == 200:
+            dataset = xr.load_dataset(io.BytesIO(response.content), engine='h5netcdf')
+        else:
+            raise PermissionError(response.status_code)
+        datetime = pd.to_datetime(dataset['time'].values.item(), utc=True)
+        streamflow = dataset['streamflow'].sel(feature_id=comids).values
+        streamflow = pd.DataFrame(pd.Series(streamflow, index=comids), columns=[datetime]).T
+        streamflow.columns = streamflow.columns.astype(str)
+        return streamflow
+
 def download_forcings(nwm_dir, forecast_hour, comids, sleeptime=0.1):
     # Download NetCDF forcings
     datasets = {}
     for lookahead_hour in range(1, 19):
         nc_url = f'short_range/nwm.t{forecast_hour:02}z.short_range.channel_rt.f{lookahead_hour:03}.conus.nc'
         url = os.path.join(nwm_dir, nc_url)
-        print(url)
         response = requests.get(url)
         if response.status_code == 200:
             dataset = xr.load_dataset(io.BytesIO(response.content), engine='h5netcdf')
@@ -81,5 +94,5 @@ def download_forcings(nwm_dir, forecast_hour, comids, sleeptime=0.1):
     qSfcLatRunoff = pd.DataFrame.from_dict(qSfcLatRunoff, orient='index', columns=comids)
     qBucket = pd.DataFrame.from_dict(qBucket, orient='index', columns=comids)
     inputs = qSfcLatRunoff + qBucket
+    inputs.columns = inputs.columns.astype(str)
     return inputs    
-
