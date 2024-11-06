@@ -10,9 +10,10 @@ from sanic import Sanic, response, json, text, empty
 from sanic.log import logger
 from sanic.worker.manager import WorkerManager
 
-# Start server app
+# Create server app
 APP_NAME = 'muskingum'
 app = Sanic(APP_NAME)
+# Set timeout threshold for app startup
 WorkerManager.THRESHOLD = 600
 
 # Response codes
@@ -30,9 +31,8 @@ async def tick(app):
     tick_dt = app.ctx.tick_dt
     simulation = app.ctx.simulation
     last_timestamp = app.ctx.current_timestamp
-    logger.info(f'Sleeping for {tick_dt} seconds')
+    logger.info(f'Sleeping for {tick_dt} seconds...')
     await asyncio.sleep(tick_dt)
-    # Step model forward in time
     urls = get_forcing_directories()
     nwm_dir, forecast_hour, timestamp = get_forecast_path(urls)
     if timestamp > last_timestamp:
@@ -40,8 +40,11 @@ async def tick(app):
         inputs = download_nwm_forcings(nwm_dir, forecast_hour=forecast_hour, comids=comids)
         logger.info(f'Forcings downloaded')
         simulation.load_states()
-        simulation.load_inputs(inputs)
+        simulation.inputs = simulation.load_inputs(inputs)
+        logger.info('Beginning simulation...')
+        # Step model forward in time
         outputs = await simulation.simulate()
+        logger.info('Simulation finished')
         app.ctx.simulation = simulation
         app.ctx.outputs = outputs
         app.ctx.current_timestamp = timestamp
@@ -53,7 +56,7 @@ async def start_model(app, loop):
     # Create model
     input_path = '/Users/mdbartos/Git/tx-fast-hydrology/notebooks/tmp/huc6.cfg'
     # Set app parameters
-    app.ctx.tick_dt = 60.0
+    app.ctx.tick_dt = 600.0
     # Create model collection
     model_collection = ModelCollection.from_file(input_path)
     logger.info('Model collection loaded')
@@ -80,6 +83,7 @@ async def start_model(app, loop):
     simulation.save_states()
     logger.info('Model states initialized')
     # Run initial simulation
+    logger.info('Beginning initial simulation...')
     outputs = await simulation.simulate()
     logger.info('Initial simulation finished')
     # Add persistent objects to global app context
