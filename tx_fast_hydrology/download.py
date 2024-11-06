@@ -47,14 +47,18 @@ def get_latest_forecast_hour(nwm_dir):
         return None
 
 def get_forecast_path(nwm_dirs):
-    for url in nwm_dirs:
+    for url in reversed(sorted(nwm_dirs)):
         forecast_hour = get_latest_forecast_hour(url)
         if forecast_hour is None:
             continue
-    return url, forecast_hour
+        else:
+            date = pathlib.Path(url).name.split('.')[1]
+            hour = pd.to_timedelta(forecast_hour, unit='h')
+            timestamp = pd.to_datetime(date, utc=True) + hour
+            return url, forecast_hour, timestamp
+    raise LookupError('No files found.')
 
-
-def download_streamflow(nwm_dir, forecast_hour, comids, sleeptime=0.1):
+def download_nwm_streamflow(nwm_dir, forecast_hour, comids, sleeptime=0.):
         # TODO: Should this include tm01 and tm02 as well?
         nc_url = f'analysis_assim/nwm.t{forecast_hour:02}z.analysis_assim.channel_rt.tm00.conus.nc'
         url = os.path.join(nwm_dir, nc_url)
@@ -69,7 +73,7 @@ def download_streamflow(nwm_dir, forecast_hour, comids, sleeptime=0.1):
         streamflow.columns = streamflow.columns.astype(str)
         return streamflow
 
-def download_forcings(nwm_dir, forecast_hour, comids, sleeptime=0.1):
+def download_nwm_forcings(nwm_dir, forecast_hour, comids, sleeptime=0.):
     # Download NetCDF forcings
     datasets = {}
     for lookahead_hour in range(1, 19):

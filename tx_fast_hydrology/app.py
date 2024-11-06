@@ -1,28 +1,50 @@
 import time
 import asyncio
-import logging
 import numpy as np
 import pandas as pd
 import requests
-from tx_fast_hydrology.muskingum import Muskingum, ModelCollection
-from tx_fast_hydrology.simulation import AsyncSimulation
-from tx_fast_hydrology.download import get_forcing_directories, get_forecast_path, download_forcings, download_streamflow
+from tx_fast_hydrology.muskingum import ModelCollection
+from tx_fast_hydrology.simulation import AsyncSimulation, CheckPoint
+from tx_fast_hydrology.download import get_forcing_directories, get_forecast_path, download_nwm_forcings, download_nwm_streamflow
 from sanic import Sanic, response, json, text, empty
+from sanic.log import logger
+from sanic.worker.manager import WorkerManager
 
 # Start server app
 APP_NAME = 'muskingum'
 app = Sanic(APP_NAME)
-logger = logging.getLogger(APP_NAME)
+WorkerManager.THRESHOLD = 600
 
 # Response codes
 OK = 200
 CREATED = 201
 BAD_REQUEST = 400
 
+# Load COMIDS
+# TODO: Clean this up
+comids = pd.read_csv('/Users/mdbartos/Git/tx-fast-hydrology/notebooks/COMIDS.csv',
+                        index_col=0)['0'].values
+
+
 async def tick(app):
     tick_dt = app.ctx.tick_dt
+    simulation = app.ctx.simulation
+    last_timestamp = app.ctx.current_timestamp
+    logger.info(f'Sleeping for {tick_dt} seconds')
     await asyncio.sleep(tick_dt)
     # Step model forward in time
+    urls = get_forcing_directories()
+    nwm_dir, forecast_hour, timestamp = get_forecast_path(urls)
+    if timestamp > last_timestamp:
+        logger.info(f'New forcings available at timestamp {timestamp}')
+        inputs = download_nwm_forcings(nwm_dir, forecast_hour=forecast_hour, comids=comids)
+        logger.info(f'Forcings downloaded')
+        simulation.load_states()
+        simulation.load_inputs(inputs)
+        outputs = await simulation.simulate()
+        app.ctx.simulation = simulation
+        app.ctx.outputs = outputs
+        app.ctx.current_timestamp = timestamp
     # Queue next loop
     app.add_task(tick, name='tick')
 
@@ -30,29 +52,46 @@ async def tick(app):
 async def start_model(app, loop):
     # Create model
     input_path = '/Users/mdbartos/Git/tx-fast-hydrology/notebooks/tmp/huc6.cfg'
-    # Load COMIDS
-    # TODO: Clean this up
-    comids = pd.read_csv('/Users/mdbartos/Git/tx-fast-hydrology/notebooks/COMIDS.csv',
-                         index_col=0)['0'].values
     # Set app parameters
     app.ctx.tick_dt = 60.0
     # Create model collection
     model_collection = ModelCollection.from_file(input_path)
     logger.info('Model collection loaded')
-    # Download latest forcings
+    # Set checkpoint callbacks
+    for model in model_collection.models.values():
+        checkpoint = CheckPoint(model, timedelta=3600.)
+        model.bind_callback(checkpoint, key='checkpoint')
+    # Download latest forcings and streamflows
+    logger.info('Downloading initial NWM forcings and streamflows...')
     urls = get_forcing_directories()
-    nwm_dir, forecast_hour = get_forecast_path(urls)
-    streamflow = download_streamflow(nwm_dir, forecast_hour=forecast_hour, comids=comids)
-    inputs = download_forcings(nwm_dir, forecast_hour=forecast_hour, comids=comids)
-    logger.info('Initial forcings loaded')
+    nwm_dir, forecast_hour, timestamp = get_forecast_path(urls)
+    streamflow = download_nwm_streamflow(nwm_dir, forecast_hour=forecast_hour, comids=comids)
+    logger.info('Initial streamflow downloaded')
+    inputs = download_nwm_forcings(nwm_dir, forecast_hour=forecast_hour, comids=comids)
+    logger.info('Initial forcings downloaded')
     # Create simulation class instance
     simulation = AsyncSimulation(model_collection, inputs)
+    logger.info('Simulation instance created')
     timestamp = streamflow.index.item()
     streamflow_values = streamflow.loc[timestamp]
+    # Set timestamp and initial states for all models
+    simulation.set_datetime(timestamp)
     simulation.init_states(streamflow_values)
+    simulation.save_states()
+    logger.info('Model states initialized')
+    # Run initial simulation
     outputs = await simulation.simulate()
+    logger.info('Initial simulation finished')
     # Add persistent objects to global app context
     app.ctx.simulation = simulation
     app.ctx.outputs = outputs
+    app.ctx.current_timestamp = timestamp
+    # Start loop
+    app.add_task(tick)
 
-app.add_task(tick)
+@app.get("/test")
+async def test(request):
+    return text('OK')
+
+if __name__ == "__main__":
+    app.run()

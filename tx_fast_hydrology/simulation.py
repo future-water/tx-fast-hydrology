@@ -14,10 +14,10 @@ class Simulation():
     def __init__(self, model_collection, inputs):
         self.model_collection = model_collection
         self.models = model_collection.models
-        self.inputs = self.read_inputs(inputs)
+        self.inputs = self.load_inputs(inputs)
         self.outputs = {}
 
-    def read_inputs(self, inputs):
+    def load_inputs(self, inputs):
         input_collection = {}
         for index, model in self.models.items():
             input_collection[index] = inputs[model.reach_ids].copy()
@@ -84,6 +84,8 @@ class Simulation():
     def init_states(self, streamflow):
         self.model_collection.init_states(streamflow)
 
+    def set_datetime(self, timestamp):
+        self.model_collection.set_datetime(timestamp)
 
 class AsyncSimulation(Simulation):
     def __init__(self, model_collection, inputs):
