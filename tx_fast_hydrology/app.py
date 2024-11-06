@@ -99,8 +99,10 @@ async def start_model(app, loop):
 async def reach_forecast(request, reach_id):
     outputs = app.ctx.outputs
     reach_id = str(reach_id)
-    json_output = {k.isoformat() : v for k, v 
-                   in outputs[reach_id].to_dict().items()}
+    timestamp_utc = [index.isoformat() for index in outputs.index]
+    streamflow_cms = [value for value in outputs[reach_id].values]
+    json_output = {'timestamp__utc' : timestamp_utc, 
+                   'streamflow__cms' : streamflow_cms}
     return json(json_output)
 
 if __name__ == "__main__":
