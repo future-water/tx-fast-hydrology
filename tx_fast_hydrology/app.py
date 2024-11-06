@@ -44,6 +44,7 @@ async def tick(app):
         logger.info('Beginning simulation...')
         # Step model forward in time
         outputs = await simulation.simulate()
+        outputs = pd.concat([series for series in outputs.values()], axis=1)
         logger.info('Simulation finished')
         app.ctx.simulation = simulation
         app.ctx.outputs = outputs
@@ -85,6 +86,7 @@ async def start_model(app, loop):
     # Run initial simulation
     logger.info('Beginning initial simulation...')
     outputs = await simulation.simulate()
+    outputs = pd.concat([series for series in outputs.values()], axis=1)
     logger.info('Initial simulation finished')
     # Add persistent objects to global app context
     app.ctx.simulation = simulation
@@ -93,9 +95,13 @@ async def start_model(app, loop):
     # Start loop
     app.add_task(tick)
 
-@app.get("/test")
-async def test(request):
-    return text('OK')
+@app.get("/forecast/<reach_id>")
+async def reach_forecast(request, reach_id):
+    outputs = app.ctx.outputs
+    reach_id = str(reach_id)
+    json_output = {k.isoformat() : v for k, v 
+                   in outputs[reach_id].to_dict().items()}
+    return json(json_output)
 
 if __name__ == "__main__":
     app.run()
