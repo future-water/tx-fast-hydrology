@@ -140,8 +140,8 @@ class Muskingum:
         self.sparse = sparse
         self.callbacks = {}
         self.saved_states = {}
-        self.sinks = {}
-        self.sources = {}
+        self.sinks = []
+        self.sources = []
         # Read json input file
         if isinstance(data, dict):
             self.load_model(data, load_optional=load_optional)
@@ -683,25 +683,40 @@ class Muskingum:
             if (startnode_index >= 0) and (endnode_index >= 0):
                 upstream_model = components[startnode]['model']
                 downstream_model = components[endnode]['model']
-                exit_index = upstream_node_map[startnode_index]
-                entry_index = downstream_node_map[endnode_index]
-                downstream_model.indegree[entry_index] -= 1
-                downstream_model.i_t_next[entry_index] -= upstream_model.o_t_next[exit_index]
+                upstream_index = upstream_node_map[startnode_index]
+                downstream_index = downstream_node_map[endnode_index]
+                downstream_model.indegree[downstream_index] -= 1
+                downstream_model.i_t_next[downstream_index] -= upstream_model.o_t_next[upstream_index]
                 # Fill in sink and source objects
-                upstream_model.sinks.update({downstream_model.name : 
-                {
-                    'model' : downstream_model,
-                    'exit_node' : exit_index
-                }})
-                downstream_model.sources.update({upstream_model.name : 
-                {
-                    'model' : upstream_model,
-                    'entry_node' : entry_index
-                }})
+                connection = Connection(upstream_model, downstream_model, 
+                                        upstream_index, downstream_index)
+                upstream_model.sinks.append(connection)
+                downstream_model.sources.append(connection)
+                #upstream_model.sinks.update({downstream_model.name : 
+                #{
+                #    'model' : downstream_model,
+                #    'exit_node' : exit_index
+                #}})
+                #downstream_model.sources.update({upstream_model.name : 
+                #{
+                #    'model' : upstream_model,
+                #    'entry_node' : entry_index
+                #}})
         models = [components[component]['model'] for component in components]
         model_collection = ModelCollection(models, name=name)
         return model_collection
 
+class Connection():
+    def __init__(self, upstream_model, downstream_model, 
+                 upstream_index, downstream_index, name=None):
+        self.upstream_model = upstream_model
+        self.downstream_model = downstream_model
+        self.upstream_index = upstream_index
+        self.downstream_index = downstream_index
+        if name is None:
+            self.name = str(uuid.uuid4())
+        else:
+            self.name = name
 
 class ModelCollection():
     def __init__(self, models, name=None):
@@ -736,23 +751,44 @@ class ModelCollection():
             model.init_states(o_t_next=model_states)
 
     def dump_model_collection(self, file_path, model_file_paths={}, dump_optional=True):
-        model_collection_info = []
+        connections = {}
+        model_pointers = []
         for model_name, model in self.models.items():
+            # TODO: Path handling seems fragile
             file_path_stem = os.path.splitext(file_path)[0]
             default_file_path = f'{file_path_stem}.{model_name}.inp'
-            model_file_paths[model_name] = model_file_paths.setdefault(model_name, default_file_path)
+            model_file_paths[model_name] = model_file_paths.setdefault(model_name,
+                                                                       default_file_path)
+            for sink in model.sinks:
+                name = sink.name
+                if not name in connections:
+                    connections.update({name : {
+                        'upstream_model' : sink.upstream_model.name,
+                        'downstream_model' : sink.downstream_model.name,
+                        'upstream_index' : int(sink.upstream_index),
+                        'downstream_index' : int(sink.downstream_index),
+                    }})
+            for source in model.sources:
+                name = source.name
+                if not name in connections:
+                    connections.update({name : {
+                        'upstream_model' : source.upstream_model.name,
+                        'downstream_model' : source.downstream_model.name,
+                        'upstream_index' : int(source.upstream_index),
+                        'downstream_index' : int(source.downstream_index),
+                    }})
         for model_name, model in self.models.items():
             model_file_path = model_file_paths[model_name]
             model.dump_model_file(model_file_path, dump_optional=dump_optional)
-            model_collection_info.append({
+            model_pointers.append({
                 'model' : os.path.abspath(model_file_path),
-                'sinks' : [{'model' : model.sinks[sink]['model'].name,
-                            'exit_node' : int(model.sinks[sink]['exit_node'])}
-                             for sink in model.sinks],
-                'sources' : [{'model' : model.sources[source]['model'].name,
-                            'entry_node' : int(model.sources[source]['entry_node'])}
-                             for source in model.sources]
+                'sinks' : [sink.name for sink in model.sinks],
+                'sources' : [source.name for source in model.sources]
                              })
+        model_collection_info = {
+            'models' : model_pointers,
+            'connections' : connections 
+        }
         with open(file_path, 'w') as f:
             json.dump(model_collection_info, f)
 
@@ -846,38 +882,23 @@ def load_nhd_geojson(file_path):
 
 def load_model_collection(file_path, load_optional=True):
     models = {}
-    sinks = {}
-    sources = {}
     with open(file_path, 'r') as f:
         model_collection_info = json.load(f)
-    for model_info in model_collection_info:
+    connections = model_collection_info['connections']
+    for model_info in model_collection_info['models']:
         model_file_path = model_info['model']
         model = Muskingum.from_model_file(model_file_path, load_optional=load_optional)
         models[model.name] = model
-        sinks[model.name] = model_info['sinks']
-        sources[model.name] = model_info['sources']
-    for model_name, model_sinks in sinks.items():
-        upstream_model = models[model_name]
-        for sink in model_sinks:
-            downstream_model = models[sink['model']]
-            exit_node = sink['exit_node']
-            upstream_model.sinks.update({
-                downstream_model.name : {
-                    'model' : downstream_model,
-                    'exit_node' : exit_node
-                }
-            })
-    for model_name, model_sources in sources.items():
-        downstream_model = models[model_name]
-        for source in model_sources:
-            upstream_model = models[source['model']]
-            entry_node = source['entry_node']
-            downstream_model.sources.update({
-                upstream_model.name : {
-                    'model' : upstream_model,
-                    'entry_node' : entry_node
-                }
-            })
+    for connection_name, connection_dict in connections.items():
+        upstream_model = models[connection_dict['upstream_model']]
+        downstream_model = models[connection_dict['downstream_model']]
+        upstream_index = connection_dict['upstream_index']
+        downstream_index = connection_dict['downstream_index']
+        connection = Connection(upstream_model, downstream_model, 
+                                upstream_index, downstream_index, 
+                                name=connection_name)
+        upstream_model.sinks.append(connection)
+        downstream_model.sources.append(connection)
     models = list(models.values())
     return models
 

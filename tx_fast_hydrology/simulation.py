@@ -133,27 +133,31 @@ class AsyncSimulation(Simulation):
     async def _accumulate(self, taskgroup, outputs, name):
         indegree = self._indegree
         startnode = name
-        model_start = self.models[startnode]
-        endnodes = model_start.sinks.keys()
-        for endnode in endnodes:
+        upstream_model = self.models[startnode]
+        connections = upstream_model.sinks
+        #endnodes = model_start.sinks.keys()
+        #for endnode in endnodes:
+        for connection in connections:
+            downstream_model = connection.downstream_model
+            endnode = downstream_model.name
             if startnode != endnode:
-                model_end = self.models[endnode]
+                #model_end = self.models[endnode]
                 inputs = self.inputs[endnode]
-                index_out = model_start.sinks[model_end.name]['exit_node']
-                index_in = model_end.sources[model_start.name]['entry_node']
-                reach_id_out = model_start.reach_ids[index_out]
-                reach_id_in = model_end.reach_ids[index_in]
+                upstream_index = connection.upstream_index
+                downstream_index = connection.downstream_index
+                reach_id_out = upstream_model.reach_ids[upstream_index]
+                reach_id_in = downstream_model.reach_ids[downstream_index]
                 # TODO: This seems fragile
                 i_t_prev = outputs[reach_id_out].shift(1).iloc[1:].fillna(0.)
                 i_t_next = outputs[reach_id_out].iloc[1:]
-                gamma_in = model_end.gamma[index_in]
-                alpha_in = model_end.alpha[index_in]
-                beta_in = model_end.beta[index_in]
+                gamma_in = downstream_model.gamma[downstream_index]
+                alpha_in = downstream_model.alpha[downstream_index]
+                beta_in = downstream_model.beta[downstream_index]
                 inputs.loc[:, reach_id_in] += (alpha_in * i_t_next.values / gamma_in
                                             + beta_in * i_t_prev.values / gamma_in)
                 indegree[endnode] -= 1
                 if (indegree[endnode] == 0):
-                    taskgroup.create_task(self._simulate(taskgroup, model_end,
+                    taskgroup.create_task(self._simulate(taskgroup, downstream_model,
                                                         inputs, endnode))
         logger.debug(f'Finished job for sub-watershed {name}')
 

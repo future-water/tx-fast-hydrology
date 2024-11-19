@@ -14,7 +14,7 @@ from sanic.worker.manager import WorkerManager
 APP_NAME = 'muskingum'
 app = Sanic(APP_NAME)
 # Set timeout threshold for app startup
-WorkerManager.THRESHOLD = 600
+WorkerManager.THRESHOLD = 1200
 
 # Response codes
 OK = 200
