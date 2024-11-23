@@ -1,4 +1,5 @@
 import os
+import asyncio
 import time
 import pathlib
 import io
@@ -7,6 +8,100 @@ import requests
 import xarray as xr
 import pandas as pd
 from bs4 import BeautifulSoup
+import httpx
+from typing import Any
+from tqdm.asyncio import tqdm as tqdm_asyncio
+from tqdm import tqdm
+
+# Define the macros as environment variables or constants
+KISTERS_USER = os.environ['KISTERS_USER']
+KISTERS_PASS = os.environ['KISTERS_PASS']
+KISTERS_BASE_URL = os.environ['KISTERS_BASE_URL']
+MAX_CONCURRENT_REQUESTS = 2
+
+def results_to_df(results: list[dict[str, Any]]) -> pd.DataFrame:
+    dataframes = []
+    for result in tqdm(results, desc="Combining DataFrames"):
+        comid = result["comid"]
+        data_entries = result.get("data", [])
+
+        # Create a DataFrame with datetime index and comid as the column
+        df = pd.DataFrame(
+            data_entries, columns=["timestamp", "value", "quality", "remark"]
+        )
+        if df.empty:  # Skip if the DataFrame is empty
+            continue
+        df["timestamp"] = pd.to_datetime(df["timestamp"])
+        df.set_index("timestamp", inplace=True)
+        df = df[["value"]].rename(columns={"value": comid})
+
+        dataframes.append(df)
+    combined_df = pd.concat(dataframes, axis=1)
+    return combined_df
+
+async def fetch_data(
+    client: httpx.AsyncClient, sem: asyncio.Semaphore, params: dict
+) -> dict:
+    url = f"{KISTERS_BASE_URL}/channels/{params['channel_id']}/timeSeries/data"
+    request_params = {
+        "to": params["to"],
+        "from": params["from"],
+        "channel_id": params["channel_id"],
+        "tsId": params["timeseries_id"],
+        "format": "JSON",
+    }
+
+    async with sem:  # Limit the concurrency
+        try:
+            response = await client.get(url, params=request_params)
+            response.raise_for_status()
+            result = response.json()
+            return {
+                "success": True,
+                "data": {
+                    "comid": params["comid"],
+                    "channel_id": params["channel_id"],
+                    "timeseries_id": params["timeseries_id"],
+                    **result[0]["locations"][0]["timeseries"][0],
+                },
+            }
+        except Exception as e:
+            return {
+                "success": False,
+                "error": f"{str(e)} - {response.text}",
+                "payload": params,
+            }
+
+async def download_gage_data(data_list: list[dict]):
+    # Lists to store results
+    successful_requests = []
+    unsuccessful_requests = []
+    successful_data_list = []
+    sem = asyncio.Semaphore(MAX_CONCURRENT_REQUESTS)
+    async with httpx.AsyncClient(auth=(KISTERS_USER, KISTERS_PASS)) as client:
+        tasks = [fetch_data(client, sem, params) for params in data_list]
+
+        # Use tqdm.asyncio.tqdm to add a progress bar to data fetching
+        results = await tqdm_asyncio.gather(*tasks, desc="Fetching Data", total=len(data_list))
+    # Separate successful and unsuccessful requests
+    for idx, result in enumerate(results):
+        if result["success"]:
+            successful_requests.append(result["data"])
+            successful_data_list.append(data_list[idx])  # Add corresponding row to successful_data_list
+        else:
+            unsuccessful_requests.append({
+                "error": result["error"],
+                "payload": result["payload"],
+            })
+
+    # Save results to CSVs
+    if successful_requests:
+        success_df = results_to_df(successful_requests)
+        success_df = success_df.interpolate().bfill().ffill()
+        return success_df
+    else:
+        return None
+
 
 def get_forcing_directories():
     baseurl = 'https://nomads.ncep.noaa.gov/pub/data/nccf/com/nwm/prod'
