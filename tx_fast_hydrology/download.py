@@ -36,6 +36,7 @@ def results_to_df(results: list[dict[str, Any]]) -> pd.DataFrame:
         df = df[["value"]].rename(columns={"value": comid})
 
         dataframes.append(df)
+    # TODO: Sometimes this fails with no data obtained from the server
     combined_df = pd.concat(dataframes, axis=1)
     return combined_df
 
@@ -98,6 +99,7 @@ async def download_gage_data(data_list: list[dict]):
     if successful_requests:
         success_df = results_to_df(successful_requests)
         success_df = success_df.interpolate().bfill().ffill()
+        success_df.columns = success_df.columns.astype(str)
         return success_df
     else:
         return None
