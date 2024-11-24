@@ -29,7 +29,7 @@ BAD_REQUEST = 400
 # Load COMIDS
 # TODO: Clean this up
 all_ids_path = "/Users/mdbartos/Git/tx-fast-hydrology/usgs-gages/usgs_subset_attila.csv"
-all_ids = pd.read_csv(all_ids_path)
+all_ids = pd.read_csv(all_ids_path).drop_duplicates(subset='comid')
 comids = pd.read_csv('/Users/mdbartos/Git/tx-fast-hydrology/notebooks/COMIDS.csv',
                         index_col=0)['0'].values
 
@@ -56,13 +56,18 @@ async def tick(app):
         app.ctx.all_ids['from'] = gage_start_time
         logger.info('Downloading gage data...')
         measurements = await download_gage_data(app.ctx.all_ids.to_dict(orient='records'))
+        # Ensure that we always use the same ordering and columns
+        measurements = measurements.reindex(app.ctx.all_ids['comid'].values.astype(str), axis=1)
+        # TODO: This needs to be fixed eventually
+        measurements = measurements.fillna(0.)
         logger.info('Gage data downloaded')
         logger.info('Assigning gage data to subbasin models...')
         for model in simulation.model_collection.models.values():
             if hasattr(model, 'callbacks') and 'kf' in model.callbacks:
                 measurements_columns = model.callbacks['kf'].measurements.columns
                 basin_measurements = measurements[measurements_columns]
-                basin_measurements = basin_measurements.loc[:, ~basin_measurements.columns.duplicated()].copy()
+                #print(f'Removing duplicate columns')
+                #basin_measurements = basin_measurements.loc[:, ~basin_measurements.columns.duplicated()].copy()
                 model.callbacks['kf'].measurements = basin_measurements
         # Step model forward in time
         logger.info('Beginning simulation...')
@@ -90,6 +95,10 @@ async def start_model(app, loop):
     app.ctx.all_ids['from'] = gage_start_time
     logger.info('Downloading gage data...')
     measurements = await download_gage_data(app.ctx.all_ids.to_dict(orient='records'))
+    # Ensure that we always use the same ordering and columns
+    measurements = measurements.reindex(app.ctx.all_ids['comid'].values.astype(str), axis=1)
+    # TODO: This needs to be fixed eventually
+    measurements = measurements.fillna(0.)
     logger.info('Gage data downloaded')
     # Create model collection
     model_collection = ModelCollection.from_file(input_path)
@@ -107,7 +116,7 @@ async def start_model(app, loop):
         if model_sites:
             basin_measurements = measurements[model_sites]
             # Remove duplicated COMIDs
-            basin_measurements = basin_measurements.loc[:, ~basin_measurements.columns.duplicated()].copy()
+            # basin_measurements = basin_measurements.loc[:, ~basin_measurements.columns.duplicated()].copy()
             Q_cov = 2 * np.eye(model.n)
             R_cov = 1e-2 * np.eye(basin_measurements.shape[1])
             P_t_init = Q_cov.copy()
