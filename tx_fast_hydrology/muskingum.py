@@ -731,6 +731,14 @@ class ModelCollection():
         model_info = {}
         return model_info
 
+    @property
+    def datetime(self):
+        # NOTE: Throws exception if models do not have same datetime
+        collection_datetime, = set([model.datetime for model
+                                    in self.models.values()])
+        collection_datetime = pd.to_datetime(collection_datetime)
+        return collection_datetime
+
     def load_states(self):
         for key in self.models:
             self.models[key].load_state()

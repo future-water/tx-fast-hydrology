@@ -75,6 +75,10 @@ class Simulation():
                     break
         return multi_outputs
     
+    @property
+    def datetime(self):
+        return self.model_collection.datetime
+
     def load_states(self):
         self.model_collection.load_states()
 

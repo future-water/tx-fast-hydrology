@@ -49,11 +49,14 @@ async def tick(app):
         simulation.load_states()
         simulation.inputs = simulation.load_inputs(inputs)
         # Download gage data
-        gage_end_time = datetime.now(timezone.utc).isoformat()
-        gage_start_time = (datetime.now(timezone.utc) 
-                           - timedelta(hours=GAGE_LOOKBACK_HOURS)).isoformat()
-        app.ctx.all_ids['to'] = gage_end_time
-        app.ctx.all_ids['from'] = gage_start_time
+        gage_end_time = pd.to_datetime(datetime.now(timezone.utc))
+        gage_start_time = pd.to_datetime(datetime.now(timezone.utc) 
+                                         - timedelta(hours=GAGE_LOOKBACK_HOURS))
+        # TODO: Check these start and end times
+        gage_end_time = max(gage_end_time, timestamp)
+        gage_start_time = min(gage_start_time, last_timestamp)
+        app.ctx.all_ids['to'] = gage_end_time.isoformat()
+        app.ctx.all_ids['from'] = gage_start_time.isoformat()
         logger.info('Downloading gage data...')
         measurements = await download_gage_data(app.ctx.all_ids.to_dict(orient='records'))
         # Ensure that we always use the same ordering and columns
@@ -69,6 +72,12 @@ async def tick(app):
                 #print(f'Removing duplicate columns')
                 #basin_measurements = basin_measurements.loc[:, ~basin_measurements.columns.duplicated()].copy()
                 model.callbacks['kf'].measurements = basin_measurements
+        # Print current times
+        logger.info(f'Gage start time: {measurements.index.min().isoformat()}\n'
+                    f'Gage end time: {measurements.index.max().isoformat()}\n'
+                    f'Input start time: {inputs.index.min().isoformat()}\n'
+                    f'Input end time: {inputs.index.max().isoformat()}\n'
+                    f'Model timestamp: {simulation.datetime.isoformat()}')
         # Step model forward in time
         logger.info('Beginning simulation...')
         outputs = await simulation.simulate()
@@ -88,11 +97,11 @@ async def start_model(app, loop):
     app.ctx.tick_dt = 600.0
     # Download gage data
     app.ctx.all_ids = all_ids
-    gage_end_time = datetime.now(timezone.utc).isoformat()
-    gage_start_time = (datetime.now(timezone.utc) 
-                       - timedelta(hours=GAGE_LOOKBACK_HOURS)).isoformat()
-    app.ctx.all_ids['to'] = gage_end_time
-    app.ctx.all_ids['from'] = gage_start_time
+    gage_end_time = pd.to_datetime(datetime.now(timezone.utc))
+    gage_start_time = pd.to_datetime(datetime.now(timezone.utc) 
+                                     - timedelta(hours=GAGE_LOOKBACK_HOURS))
+    app.ctx.all_ids['to'] = gage_end_time.isoformat()
+    app.ctx.all_ids['from'] = gage_start_time.isoformat()
     logger.info('Downloading gage data...')
     measurements = await download_gage_data(app.ctx.all_ids.to_dict(orient='records'))
     # Ensure that we always use the same ordering and columns
