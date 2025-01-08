@@ -760,13 +760,13 @@ class ModelCollection():
 
     def dump_model_collection(self, file_path, model_file_paths={}, dump_optional=True):
         connections = {}
-        model_pointers = []
+        models = {}
         for model_name, model in self.models.items():
             # TODO: Path handling seems fragile
-            file_path_stem = os.path.splitext(file_path)[0]
-            default_file_path = f'{file_path_stem}.{model_name}.inp'
-            model_file_paths[model_name] = model_file_paths.setdefault(model_name,
-                                                                       default_file_path)
+            #file_path_stem = os.path.splitext(file_path)[0]
+            #default_file_path = f'{file_path_stem}.{model_name}.inp'
+            #model_file_paths[model_name] = model_file_paths.setdefault(model_name,
+            #                                                           default_file_path)
             for sink in model.sinks:
                 name = sink.name
                 if not name in connections:
@@ -786,19 +786,25 @@ class ModelCollection():
                         'downstream_index' : int(source.downstream_index),
                     }})
         for model_name, model in self.models.items():
-            model_file_path = model_file_paths[model_name]
-            model.dump_model_file(model_file_path, dump_optional=dump_optional)
-            model_pointers.append({
-                'model' : os.path.abspath(model_file_path),
-                'sinks' : [sink.name for sink in model.sinks],
-                'sources' : [source.name for source in model.sources]
-                             })
+            #model_file_path = model_file_paths[model_name]
+            #model.dump_model_file(model_file_path, dump_optional=dump_optional)
+            #model_pointers.append({
+            #    'model' : os.path.abspath(model_file_path),
+            #    'sinks' : [sink.name for sink in model.sinks],
+            #    'sources' : [source.name for source in model.sources]
+            #                 })
+            # TODO: Sinks and sources don't seem to be used
+            # TODO: Doesn't allow ignoring optional fields
+            models[model_name] = {'model' : model.info,
+                                  'sinks' : [sink.name for sink in model.sinks],
+                                  'sources' : [source.name for source in model.sources]}
         model_collection_info = {
-            'models' : model_pointers,
+            'models' : models,
             'connections' : connections 
         }
         with open(file_path, 'w') as f:
-            json.dump(model_collection_info, f)
+            #json.dump(model_collection_info, f)
+            json.dump(model_collection_info, f, cls=ModelEncoder)
 
     @classmethod
     def from_file(cls, file_path, load_optional=True, **kwargs):
@@ -891,11 +897,15 @@ def load_nhd_geojson(file_path):
 def load_model_collection(file_path, load_optional=True):
     models = {}
     with open(file_path, 'r') as f:
-        model_collection_info = json.load(f)
+        #model_collection_info = json.load(f)
+        model_collection_info = json.load(f, cls=ModelDecoder)
     connections = model_collection_info['connections']
-    for model_info in model_collection_info['models']:
-        model_file_path = model_info['model']
-        model = Muskingum.from_model_file(model_file_path, load_optional=load_optional)
+    #for model_info in model_collection_info['models']:
+    for model_name, model_info in model_collection_info['models'].items():
+        #model_file_path = model_info['model']
+        #model = Muskingum.from_model_file(model_file_path, load_optional=load_optional)
+        obj = model_info['model']
+        model = Muskingum(obj, load_optional=load_optional)
         models[model.name] = model
     for connection_name, connection_dict in connections.items():
         upstream_model = models[connection_dict['upstream_model']]

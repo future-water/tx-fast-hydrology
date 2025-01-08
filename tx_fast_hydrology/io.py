@@ -20,21 +20,30 @@ class ModelEncoder(json.JSONEncoder):
 
 class ModelDecoder(json.JSONDecoder):
     def __init__(self, *args, **kwargs):
-        iso_timestamp = '^(\d{4}-[01]\d-[0-3]\dT[0-2]\d:[0-5]\d:[0-5]\d\.\d+([+-][0-2]\d:[0-5]\d|Z))|(\d{4}-[01]\d-[0-3]\dT[0-2]\d:[0-5]\d:[0-5]\d([+-][0-2]\d:[0-5]\d|Z))|(\d{4}-[01]\d-[0-3]\dT[0-2]\d:[0-5]\d([+-][0-2]\d:[0-5]\d|Z))$'
-        iso_timedelta = '^P(\d+Y)?(\d+M)?(\d+D)?T(\d+H)?(\d+M)?([0-9.]S)?$'
-        self.timestamp_regex = re.compile(iso_timestamp)
-        self.timedelta_regex = re.compile(iso_timedelta)
         return json.JSONDecoder.__init__(self, object_hook=self.object_hook,
                                          *args, **kwargs)
 
-    def parse_datetimes(self, value):
-        if isinstance(value, str):
-            if self.timestamp_regex.match(value):
+    def parse_fields(self, key, value):
+        match key:
+            case 'startnodes':
+                return np.asarray(value, dtype=np.int64)
+            case 'endnodes':
+                return np.asarray(value, dtype=np.int64)
+            case 'K':
+                return np.asarray(value, dtype=np.float64)
+            case 'X':
+                return np.asarray(value, dtype=np.float64)
+            case 'o_t':
+                return np.asarray(value, dtype=np.float64)
+            case 'datetime':
                 return pd.to_datetime(value)
-            elif self.timedelta_regex.match(value):
+            case 'timedelta':
                 return pd.to_timedelta(value)
         return value
         
-    def object_hook(self, dct):
-        return {k : self.parse_datetimes(v) for k, v, in dct.items()}
+    def object_hook(self, obj):
+        if isinstance(obj, dict):
+            return {k : self.parse_fields(k, v) for k, v, in obj.items()}
+        else:
+            return obj
 

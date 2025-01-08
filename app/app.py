@@ -100,7 +100,7 @@ async def tick(app):
 @app.before_server_start
 async def start_model(app, loop):
     # Create model
-    input_path = '/home/akagi/Documents/Git/tx-fast-hydrology/data/huc8/model.cfg'
+    input_path = '/home/akagi/Documents/Git/tx-fast-hydrology/data/huc8.json'
     # Set app parameters
     app.ctx.tick_dt = 600.0
     # Download gage data
