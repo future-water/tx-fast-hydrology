@@ -19,8 +19,9 @@ setup(
         "Natural Language :: English",
         "Operating System :: OS Independent",
         "Programming Language :: Python :: 3",
-        "Programming Language :: Python :: 3.11",
-        "Programming Language :: Python :: 3.12",
+        "Programming Language :: Python :: 3.9"  # Under linux, it's pinned to 3.9 because of numba / llvmlite
+        "Programming Language :: Python :: 3.11",  # Might work under macos
+        "Programming Language :: Python :: 3.12",  # Numba is officially unsupported on 3.12
         "Topic :: Scientific/Engineering :: Hydrology",
     ],
     include_package_data=True,
@@ -30,7 +31,22 @@ setup(
         "numba",
         "scipy",
     ],
+    python_requires=">=3.9, <3.13",  # Restrict versions of Python
     extras_require=dict(
-        dev=["pytest", "pytest-cov"]
+        app=[
+            "requests",
+            "xarray",
+            "sanic",
+            "bs4",
+            "httpx",
+            "tqdm",
+            "sanic_ext",
+            "lxml",
+            "scipy",
+            "h5netcdf",
+            "cftime",
+            "jinja2",
+        ],
+        test=["pytest", "pytest-cov"],
     ),
 )

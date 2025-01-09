@@ -23,6 +23,7 @@ WorkerManager.THRESHOLD = 2400
 # Set up static directory
 app.static('/static', './static')
 
+
 # Constants
 GAGE_LOOKBACK_HOURS = 2
 
@@ -33,9 +34,9 @@ BAD_REQUEST = 400
 
 # Load COMIDS
 # TODO: Clean this up
-all_ids_path = "/home/akagi/Documents/Git/tx-fast-hydrology/data/usgs_subset_attila.csv"
+all_ids_path = "./data/usgs_subset_attila.csv"
 all_ids = pd.read_csv(all_ids_path).drop_duplicates(subset='comid')
-comids = pd.read_csv("/home/akagi/Documents/Git/tx-fast-hydrology/data/COMIDs.csv",
+comids = pd.read_csv("./data/COMIDs.csv",
                         index_col=0)['0'].values
 
 
@@ -100,7 +101,7 @@ async def tick(app):
 @app.before_server_start
 async def start_model(app, loop):
     # Create model
-    input_path = '/home/akagi/Documents/Git/tx-fast-hydrology/data/huc8.json'
+    input_path = './data/huc8.json'
     # Set app parameters
     app.ctx.tick_dt = 600.0
     # Download gage data
@@ -172,7 +173,7 @@ async def start_model(app, loop):
     app.ctx.current_timestamp = timestamp
     app.ctx.streamflow = streamflow
     # Read geojson
-    with open('/home/akagi/Documents/Git/tx-fast-hydrology/data/huc2_12_nhd_min.json') as basin:
+    with open('./data/huc2_12_nhd_min.json') as basin:
         stream_network = jsonlib.load(basin)
         app.ctx.stream_network = stream_network
     # Start loop
