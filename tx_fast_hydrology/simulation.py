@@ -91,11 +91,10 @@ class Simulation():
     def set_datetime(self, timestamp):
         self.model_collection.set_datetime(timestamp)
 
-
 class AsyncSimulation(Simulation):
     def __init__(self, model_collection, inputs):
-        super().__init__(model_collection, inputs)
-
+        return super().__init__(model_collection, inputs)
+    
     async def simulate(self):
         try:
             asyncio.get_running_loop()
@@ -109,20 +108,18 @@ class AsyncSimulation(Simulation):
         return self.outputs
 
     async def _main(self):
-        indegree = {model.name: len(model.sources) for model in self.model_collection.models.values()}
+        indegree = {model.name : len(model.sources) for model 
+                    in self.model_collection.models.values()}
         self._indegree = indegree
-        tasks = []  # List to manage tasks manually (Python 3.9 compatible)
+        async with asyncio.TaskGroup() as taskgroup:
+            for name, predecessors in indegree.items():
+                if predecessors == 0:
+                    model = self.models[name]
+                    inputs = self.inputs[name]
+                    taskgroup.create_task(self._simulate(taskgroup, model,
+                                                         inputs, name))
 
-        for name, predecessors in indegree.items():
-            if predecessors == 0:
-                model = self.models[name]
-                inputs = self.inputs[name]
-                tasks.append(asyncio.create_task(self._simulate(model, inputs, name)))
-
-        # Await all tasks to complete
-        await asyncio.gather(*tasks)
-
-    async def _simulate(self, model, inputs, name):
+    async def _simulate(self, taskgroup, model, inputs, name):
         logger.debug(f'Started job for sub-watershed {name}')
         start_time = model.datetime
         outputs = {}
@@ -135,40 +132,37 @@ class AsyncSimulation(Simulation):
         outputs.index = pd.to_datetime(outputs.index, utc=True)
         outputs.columns = inputs.columns
         self.outputs[name] = outputs
-        await self._accumulate(outputs, name)  # Direct call since no TaskGroup
+        taskgroup.create_task(self._accumulate(taskgroup, outputs, name))
 
-    async def _accumulate(self, outputs, name):
+    async def _accumulate(self, taskgroup, outputs, name):
         indegree = self._indegree
         startnode = name
         upstream_model = self.models[startnode]
         connections = upstream_model.sinks
-
-        tasks = []  # List to manage tasks manually
-
+        #endnodes = model_start.sinks.keys()
+        #for endnode in endnodes:
         for connection in connections:
             downstream_model = connection.downstream_model
             endnode = downstream_model.name
             if startnode != endnode:
+                #model_end = self.models[endnode]
                 inputs = self.inputs[endnode]
                 upstream_index = connection.upstream_index
                 downstream_index = connection.downstream_index
                 reach_id_out = upstream_model.reach_ids[upstream_index]
                 reach_id_in = downstream_model.reach_ids[downstream_index]
+                # TODO: This seems fragile
                 i_t_prev = outputs[reach_id_out].shift(1).iloc[1:].fillna(0.)
                 i_t_next = outputs[reach_id_out].iloc[1:]
                 gamma_in = downstream_model.gamma[downstream_index]
                 alpha_in = downstream_model.alpha[downstream_index]
                 beta_in = downstream_model.beta[downstream_index]
                 inputs.loc[:, reach_id_in] += (alpha_in * i_t_next.values / gamma_in
-                                               + beta_in * i_t_prev.values / gamma_in)
+                                            + beta_in * i_t_prev.values / gamma_in)
                 indegree[endnode] -= 1
-                if indegree[endnode] == 0:
-                    tasks.append(asyncio.create_task(self._simulate(downstream_model, inputs, endnode)))
-
-        # Await all downstream tasks
-        if tasks:
-            await asyncio.gather(*tasks)
-
+                if (indegree[endnode] == 0):
+                    taskgroup.create_task(self._simulate(taskgroup, downstream_model,
+                                                        inputs, endnode))
         logger.debug(f'Finished job for sub-watershed {name}')
 
 

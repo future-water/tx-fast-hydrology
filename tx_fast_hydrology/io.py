@@ -24,20 +24,21 @@ class ModelDecoder(json.JSONDecoder):
                                          *args, **kwargs)
 
     def parse_fields(self, key, value):
-        if key == 'startnodes':
-            return np.asarray(value, dtype=np.int64)
-        elif key == 'endnodes':
-            return np.asarray(value, dtype=np.int64)
-        elif key == 'K':
-            return np.asarray(value, dtype=np.float64)
-        elif key == 'X':
-            return np.asarray(value, dtype=np.float64)
-        elif key == 'o_t':
-            return np.asarray(value, dtype=np.float64)
-        elif key == 'datetime':
-            return pd.to_datetime(value)
-        elif key == 'timedelta':
-            return pd.to_timedelta(value)
+        match key:
+            case 'startnodes':
+                return np.asarray(value, dtype=np.int64)
+            case 'endnodes':
+                return np.asarray(value, dtype=np.int64)
+            case 'K':
+                return np.asarray(value, dtype=np.float64)
+            case 'X':
+                return np.asarray(value, dtype=np.float64)
+            case 'o_t':
+                return np.asarray(value, dtype=np.float64)
+            case 'datetime':
+                return pd.to_datetime(value)
+            case 'timedelta':
+                return pd.to_timedelta(value)
         return value
         
     def object_hook(self, obj):
