@@ -33,37 +33,29 @@ comids = pd.read_csv("./data/COMIDs.csv", index_col=0)["0"].values
 def create_app() -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI):
-        app.state.tick_dt = 600.0  # 600 seconds (10 minutes)
-        tracemalloc.start()  # Start tracing memory allocations
+        """Initialize the app state and start periodic updates."""
+        app.state.tick_dt = 600.0  # 10 minutes
+        
         # Initialization logic
+        logger.info("Initializing the simulation...")
         input_path = "./data/huc8.json"
         gage_end_time = pd.to_datetime(datetime.now(timezone.utc))
-        gage_start_time = pd.to_datetime(
-            datetime.now(timezone.utc) - timedelta(hours=GAGE_LOOKBACK_HOURS)
-        )
-
+        gage_start_time = pd.to_datetime(datetime.now(timezone.utc) - timedelta(hours=GAGE_LOOKBACK_HOURS))
+        
         app.state.all_ids = all_ids
         app.state.all_ids["to"] = gage_end_time.isoformat()
         app.state.all_ids["from"] = gage_start_time.isoformat()
-
-        logger.info("Downloading gage data...")
-        measurements = await download_gage_data(
-            app.state.all_ids.to_dict(orient="records")
-        )
-        measurements = measurements.reindex(
-            app.state.all_ids["comid"].values.astype(str), axis=1
-        ).fillna(0.0)
-        logger.info("Gage data downloaded")
-
+        
+        logger.info("Downloading initial gage data...")
+        measurements = await download_gage_data(app.state.all_ids.to_dict(orient="records"))
+        measurements = measurements.reindex(app.state.all_ids["comid"].values.astype(str), axis=1).fillna(0.0)
+        
+        logger.info("Loading model collection...")
         model_collection = ModelCollection.from_file(input_path)
         for model in model_collection.models.values():
             checkpoint = CheckPoint(model, timedelta=3600)
             model.bind_callback(checkpoint, key="checkpoint")
-            model_sites = [
-                reach_id
-                for reach_id in model.reach_ids
-                if reach_id in measurements.columns
-            ]
+            model_sites = [reach_id for reach_id in model.reach_ids if reach_id in measurements.columns]
             if model_sites:
                 basin_measurements = measurements[model_sites]
                 Q_cov = 2 * np.eye(model.n)
@@ -71,16 +63,13 @@ def create_app() -> FastAPI:
                 P_t_init = Q_cov.copy()
                 kf = KalmanFilter(model, basin_measurements, Q_cov, R_cov, P_t_init)
                 model.bind_callback(kf, key="kf")
-
+        
         logger.info("Downloading initial NWM forcings and streamflows...")
         urls = get_forcing_directories()
         nwm_dir, forecast_hour, timestamp = get_forecast_path(urls)
-        streamflow = download_nwm_streamflow(
-            nwm_dir, forecast_hour=forecast_hour, comids=comids
-        )
-        inputs = download_nwm_forcings(
-            nwm_dir, forecast_hour=forecast_hour, comids=comids
-        )
+        streamflow = download_nwm_streamflow(nwm_dir, forecast_hour=forecast_hour, comids=comids)
+        inputs = download_nwm_forcings(nwm_dir, forecast_hour=forecast_hour, comids=comids)
+        
         simulation = AsyncSimulation(model_collection, inputs)
         timestamp = streamflow.index.item()
         streamflow_values = streamflow.loc[timestamp]
@@ -89,26 +78,24 @@ def create_app() -> FastAPI:
         simulation.save_states()
         outputs = await simulation.simulate()
         outputs = pd.concat([series for series in outputs.values()], axis=1)
-
-        # Add persistent objects to app state
+        
+        # Add initial objects to app state
         app.state.simulation = simulation
         app.state.outputs = outputs
         app.state.current_timestamp = timestamp
         app.state.streamflow = streamflow
+        
         with open("./data/huc2_12_nhd_min.json") as basin:
             app.state.stream_network = jsonlib.load(basin)
-
-        current, peak = tracemalloc.get_traced_memory()  # Get current and peak memory usage
-        print(f"Current memory usage: {current / 1024**2:.2f} MB")
-        print(f"Peak memory usage: {peak / 1024**2:.2f} MB")
         
-        tracemalloc.stop()  # Stop tracing memory allocations
+        logger.info("Initialization complete. Starting periodic updates...")
+        
+        # Start the periodic background task
         asyncio.create_task(tick(app))
-
-        yield  # Yield control back to FastAPI for handling requests
-
-        # Cleanup logic (if needed)
-        logger.info("Application shutdown")
+        
+        yield
+        
+        logger.info("Application shutdown.")
 
     app = FastAPI(
         title="Muskingum Forecast API", lifespan=lifespan, root_path="/kf"
@@ -200,16 +187,76 @@ def create_app() -> FastAPI:
     
     app.include_router(router)
     for route in app.routes:
-        print(f"Path: {route.path}, Name: {route.name}")
+        logger.info(f"Path: {route.path}, Name: {route.name}")
     return app
 
 
 async def tick(app: FastAPI):
+    """Periodic background task to update simulation and state."""
     while True:
+        tracemalloc.start()  # Start tracing memory allocations
         tick_dt = app.state.tick_dt
         simulation = app.state.simulation
         last_timestamp = app.state.current_timestamp
+        
         logger.info(f"Sleeping for {tick_dt} seconds...")
         await asyncio.sleep(tick_dt)
-        # Your existing logic for downloading, updating, and simulating
-        logger.info("Queueing next tick iteration...")
+        
+        # Download new NWM forcings and streamflows
+        urls = get_forcing_directories()
+        nwm_dir, forecast_hour, timestamp = get_forecast_path(urls)
+        
+        if timestamp > last_timestamp:
+            logger.info(f'New forcings available at timestamp {timestamp}')
+            streamflow = download_nwm_streamflow(nwm_dir, forecast_hour=forecast_hour, comids=comids)
+            logger.info('Streamflow downloaded')
+            inputs = download_nwm_forcings(nwm_dir, forecast_hour=forecast_hour, comids=comids)
+            logger.info('Forcings downloaded')
+            simulation.load_states()
+            simulation.inputs = simulation.load_inputs(inputs)
+            # Download gage data
+            gage_end_time = pd.to_datetime(datetime.now(timezone.utc))
+            gage_start_time = pd.to_datetime(datetime.now(timezone.utc) 
+                                            - timedelta(hours=GAGE_LOOKBACK_HOURS))
+            # TODO: Check these start and end times
+            gage_end_time = max(gage_end_time, timestamp)
+            gage_start_time = min(gage_start_time, last_timestamp)
+            app.state.all_ids['to'] = gage_end_time.isoformat()
+            app.state.all_ids['from'] = gage_start_time.isoformat()
+            logger.info('Downloading gage data...')
+            measurements = await download_gage_data(app.state.all_ids.to_dict(orient='records'))
+            # Ensure that we always use the same ordering and columns
+            measurements = measurements.reindex(app.state.all_ids['comid'].values.astype(str), axis=1)
+            # TODO: This needs to be fixed eventually
+            measurements = measurements.fillna(0.)
+            logger.info('Gage data downloaded')
+            logger.info('Assigning gage data to subbasin models...')
+            for model in simulation.model_collection.models.values():
+                if hasattr(model, 'callbacks') and 'kf' in model.callbacks:
+                    measurements_columns = model.callbacks['kf'].measurements.columns
+                    basin_measurements = measurements[measurements_columns]
+                    #print(f'Removing duplicate columns')
+                    #basin_measurements = basin_measurements.loc[:, ~basin_measurements.columns.duplicated()].copy()
+                    model.callbacks['kf'].measurements = basin_measurements
+            # Print current times
+            logger.info(f'Gage start time: {measurements.index.min().isoformat()}\n'
+                        f'Gage end time: {measurements.index.max().isoformat()}\n'
+                        f'Input start time: {inputs.index.min().isoformat()}\n'
+                        f'Input end time: {inputs.index.max().isoformat()}\n'
+                        f'Model timestamp: {simulation.datetime.isoformat()}')
+            # Step model forward in time
+            logger.info('Beginning simulation...')
+            outputs = await simulation.simulate()
+            outputs = pd.concat([series for series in outputs.values()], axis=1)
+            logger.info('Simulation finished')
+            app.state.simulation = simulation
+            app.state.outputs = outputs
+            app.state.current_timestamp = timestamp
+            app.state.streamflow = streamflow
+        else:
+            logger.info("No new forcings available; skipping update")
+        current, peak = tracemalloc.get_traced_memory()  # Get current and peak memory usage
+        logger.info(f"Current memory usage: {current / 1024**2:.2f} MB")
+        logger.info(f"Peak memory usage: {peak / 1024**2:.2f} MB")
+        
+        tracemalloc.stop()  # Stop tracing memory allocations
