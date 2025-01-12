@@ -1,5 +1,6 @@
 import os
 import time
+import tracemalloc
 from memory_profiler import profile
 import json as jsonlib
 from datetime import datetime, timezone, timedelta
@@ -8,7 +9,6 @@ import numpy as np
 import pandas as pd
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request, APIRouter
-from fastapi.staticfiles import StaticFiles
 from fastapi.responses import RedirectResponse, FileResponse, JSONResponse
 from fastapi.templating import Jinja2Templates
 from loguru import logger
@@ -29,11 +29,12 @@ all_ids_path = "./data/usgs_subset_attila.csv"
 all_ids = pd.read_csv(all_ids_path).drop_duplicates(subset="comid")
 comids = pd.read_csv("./data/COMIDs.csv", index_col=0)["0"].values
 
-
+# @profile(stream=open('memory_profile.log', 'w'))
 def create_app() -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         app.state.tick_dt = 600.0  # 600 seconds (10 minutes)
+        tracemalloc.start()  # Start tracing memory allocations
         # Initialization logic
         input_path = "./data/huc8.json"
         gage_end_time = pd.to_datetime(datetime.now(timezone.utc))
@@ -97,6 +98,11 @@ def create_app() -> FastAPI:
         with open("./data/huc2_12_nhd_min.json") as basin:
             app.state.stream_network = jsonlib.load(basin)
 
+        current, peak = tracemalloc.get_traced_memory()  # Get current and peak memory usage
+        print(f"Current memory usage: {current / 1024**2:.2f} MB")
+        print(f"Peak memory usage: {peak / 1024**2:.2f} MB")
+        
+        tracemalloc.stop()  # Stop tracing memory allocations
         asyncio.create_task(tick(app))
 
         yield  # Yield control back to FastAPI for handling requests
@@ -198,7 +204,6 @@ def create_app() -> FastAPI:
     return app
 
 
-@profile
 async def tick(app: FastAPI):
     while True:
         tick_dt = app.state.tick_dt
