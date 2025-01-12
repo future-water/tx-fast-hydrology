@@ -14,14 +14,14 @@ from tqdm.asyncio import tqdm as tqdm_asyncio
 from tqdm import tqdm
 
 # Define the macros as environment variables or constants
-KISTERS_USER = os.environ['KISTERS_USER']
-KISTERS_PASS = os.environ['KISTERS_PASS']
-KISTERS_BASE_URL = os.environ['KISTERS_BASE_URL']
+KISTERS_USER = os.getenv('KISTERS_USER',"txdot-analytics@kisters.net")
+KISTERS_PASS = os.getenv('KISTERS_PASS',"dsKNahM3t!2")
+KISTERS_BASE_URL = os.getenv('KISTERS_BASE_URL',"https://na.datasphere.online/external")
 MAX_CONCURRENT_REQUESTS = 2
 
 def results_to_df(results: list[dict[str, Any]]) -> pd.DataFrame:
     dataframes = []
-    for result in tqdm(results, desc="Combining DataFrames"):
+    for result in tqdm(results, desc="Combining DataFrames", ncols=100):
         comid = result["comid"]
         data_entries = result.get("data", [])
 
@@ -83,7 +83,7 @@ async def download_gage_data(data_list: list[dict]):
         tasks = [fetch_data(client, sem, params) for params in data_list]
 
         # Use tqdm.asyncio.tqdm to add a progress bar to data fetching
-        results = await tqdm_asyncio.gather(*tasks, desc="Fetching Data", total=len(data_list))
+        results = await tqdm_asyncio.gather(*tasks, desc="Fetching Data", total=len(data_list), ncols=100)
     # Separate successful and unsuccessful requests
     for idx, result in enumerate(results):
         if result["success"]:
