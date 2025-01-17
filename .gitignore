@@ -1,5 +1,6 @@
 
 .vscode
+cache
 venv311
 
 # Byte-compiled / optimized / DLL files

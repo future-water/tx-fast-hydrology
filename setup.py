@@ -46,7 +46,9 @@ setup(
             "h5netcdf",
             "cftime",
             "jinja2",
+            "boto3",
+            "netcdf4"
         ],
-        test=["pytest", "pytest-cov"],
+        test=["pytest", "pytest-cov","ruff","mypy"],
     ),
 )

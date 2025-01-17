@@ -138,7 +138,7 @@ class Muskingum:
     """
     def __init__(self, data, load_optional=True, create_state_space=False, sparse=False):
         self.sparse = sparse
-        self.callbacks = {}
+        self.callbacks: dict[str, BaseCallback] = {}
         self.saved_states = {}
         self.sinks = []
         self.sources = []
@@ -496,7 +496,7 @@ class Muskingum:
             self.step(p_t_next, **kwargs)
             yield self
 
-    def simulate_iter(self, dataframe, start_time=None, end_time=None, o_t_init=None, **kwargs):
+    def simulate_iter(self, dataframe: pd.DataFrame, start_time: pd.Timestamp | None=None, end_time: pd.Timestamp | None =None, o_t_init=None, **kwargs):
         assert isinstance(dataframe.index, pd.core.indexes.datetimes.DatetimeIndex)
         assert (dataframe.index.tz == datetime.timezone.utc)
         assert np.in1d(self.reach_ids, dataframe.columns).all()
@@ -507,16 +507,16 @@ class Muskingum:
         else:
             try:
                 assert isinstance(end_time, pd.Timestamp)
-            except:
-                raise TypeError('`end_time` must be of type `pd.Timestamp`')
+            except Exception as e :
+                raise TypeError('`end_time` must be of type `pd.Timestamp`') from e
         if start_time is None:
             start_time = self.datetime
         else:
             self.datetime = start_time
             try:
                 assert o_t_init is not None
-            except:
-                ValueError('If `start_time` is specified, initial state `o_t_init` must be provided.')
+            except Exception as e:
+                raise ValueError('If `start_time` is specified, initial state `o_t_init` must be provided.') from e
         if o_t_init is not None:
             self.init_states(o_t_next=o_t_init)
         # Execute pre-simulation callbacks

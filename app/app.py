@@ -1,21 +1,22 @@
-import time
 import json as jsonlib
 from datetime import datetime, timezone, timedelta
 import asyncio
 import numpy as np
 import pandas as pd
-import requests
-from tx_fast_hydrology.muskingum import ModelCollection
+from tx_fast_hydrology.muskingum import ModelCollection, Muskingum
 from tx_fast_hydrology.da import KalmanFilter
 from tx_fast_hydrology.simulation import AsyncSimulation, CheckPoint
 from tx_fast_hydrology.download import download_gage_data, get_forcing_directories, get_forecast_path, download_nwm_forcings, download_nwm_streamflow
-from sanic import Sanic, response, json, text, empty
+from sanic import Sanic, json
 from sanic.log import logger
 from sanic.worker.manager import WorkerManager
 from sanic_ext import render
-
+from typing import cast
+import os
+os.environ["WORKER_ACK_TIMEOUT"] = "900"
 # Create server app
 APP_NAME = 'muskingum'
+NETWORK_JSON_PATH = './data/huc2_12_nhd_min_mod.json'
 app = Sanic(APP_NAME)
 # Set timeout threshold for app startup
 WorkerManager.THRESHOLD = 2400
@@ -36,14 +37,14 @@ BAD_REQUEST = 400
 # TODO: Clean this up
 all_ids_path = "./data/usgs_subset_attila.csv"
 all_ids = pd.read_csv(all_ids_path).drop_duplicates(subset='comid')
-comids = pd.read_csv("./data/COMIDs.csv",
+comids = pd.read_csv("./data/comids_mod.csv",
                         index_col=0)['0'].values
 
 
 async def tick(app):
-    tick_dt = app.ctx.tick_dt
-    simulation = app.ctx.simulation
-    last_timestamp = app.ctx.current_timestamp
+    tick_dt: float = app.ctx.tick_dt
+    simulation: AsyncSimulation = app.ctx.simulation
+    last_timestamp: datetime = app.ctx.current_timestamp
     logger.info(f'Sleeping for {tick_dt} seconds...')
     await asyncio.sleep(tick_dt)
     urls = get_forcing_directories()
@@ -51,9 +52,9 @@ async def tick(app):
     if timestamp > last_timestamp:
         logger.info(f'New forcings available at timestamp {timestamp}')
         streamflow = download_nwm_streamflow(nwm_dir, forecast_hour=forecast_hour, comids=comids)
-        logger.info(f'Streamflow downloaded')
+        logger.info('Streamflow downloaded')
         inputs = download_nwm_forcings(nwm_dir, forecast_hour=forecast_hour, comids=comids)
-        logger.info(f'Forcings downloaded')
+        logger.info('Forcings downloaded')
         simulation.load_states()
         simulation.inputs = simulation.load_inputs(inputs)
         # Download gage data
@@ -101,7 +102,7 @@ async def tick(app):
 @app.before_server_start
 async def start_model(app, loop):
     # Create model
-    input_path = './data/huc8.json'
+    input_path = './data/huc8_no_lake.json'
     # Set app parameters
     app.ctx.tick_dt = 600.0
     # Download gage data
@@ -129,6 +130,7 @@ async def start_model(app, loop):
     # Set up Kalman Filter
     logger.info('Setting up Kalman Filter...')
     for model in model_collection.models.values():
+        model = cast(Muskingum, model)
         model_sites = [reach_id for reach_id in model.reach_ids 
                        if reach_id in measurements.columns]
         if model_sites:
@@ -173,7 +175,7 @@ async def start_model(app, loop):
     app.ctx.current_timestamp = timestamp
     app.ctx.streamflow = streamflow
     # Read geojson
-    with open('./data/huc2_12_nhd_min.json') as basin:
+    with open(NETWORK_JSON_PATH) as basin:
         stream_network = jsonlib.load(basin)
         app.ctx.stream_network = stream_network
     # Start loop
@@ -216,7 +218,7 @@ async def map_handler(request):
     hi = float(diff.quantile(0.90))
     lo = float(diff.quantile(0.10))
     for feature in stream_network['features']:
-        comid = str(feature['properties']['COMID'])
+        comid = str(feature['attributes']['COMID'])
         path_diff = diff[comid]
         if path_diff > hi:
             c = 'positive'
@@ -224,7 +226,7 @@ async def map_handler(request):
             c = 'negative'
         else:
             c = 'zero'
-        feature['properties']['change'] = c
+        feature['attributes']['change'] = c
     return await render("show_page.html", context={'streams_json' : stream_network})
 
 if __name__ == "__main__":

@@ -6,12 +6,13 @@ import uuid
 import json
 import numpy as np
 import pandas as pd
+from .muskingum import Muskingum
 from tx_fast_hydrology.callbacks import BaseCallback
 
 logger = logging.getLogger(__name__)
 
 class Simulation():
-    def __init__(self, model_collection, inputs):
+    def __init__(self, model_collection: dict[str,], inputs):
         self.model_collection = model_collection
         self.models = model_collection.models
         self.inputs = self.load_inputs(inputs)
@@ -119,7 +120,7 @@ class AsyncSimulation(Simulation):
                     taskgroup.create_task(self._simulate(taskgroup, model,
                                                          inputs, name))
 
-    async def _simulate(self, taskgroup, model, inputs, name):
+    async def _simulate(self, taskgroup: asyncio.TaskGroup, model: Muskingum, inputs: pd.DataFrame, name: str):
         logger.debug(f'Started job for sub-watershed {name}')
         start_time = model.datetime
         outputs = {}
@@ -134,7 +135,7 @@ class AsyncSimulation(Simulation):
         self.outputs[name] = outputs
         taskgroup.create_task(self._accumulate(taskgroup, outputs, name))
 
-    async def _accumulate(self, taskgroup, outputs, name):
+    async def _accumulate(self, taskgroup: asyncio.TaskGroup, outputs: pd.DataFrame, name):
         indegree = self._indegree
         startnode = name
         upstream_model = self.models[startnode]
