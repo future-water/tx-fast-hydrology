@@ -402,7 +402,7 @@ async def tick(app: FastAPI):
             ds = xr.Dataset(
                 {"streamflow": (["time", "feature_id"], outputs.values)},
                 coords={
-                    "time": outputs.index,
+                    "time": outputs.index.tz_localize(None).astype("datetime64[ns]"),
                     "reference_time": ("reference_time", [np.datetime64(timestamp)]),
                     "feature_id": [int(f_id) for f_id in outputs.columns],
                 },
