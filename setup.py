@@ -19,16 +19,15 @@ setup(
         "Natural Language :: English",
         "Operating System :: OS Independent",
         "Programming Language :: Python :: 3",
-        "Programming Language :: Python :: 3.9"  # Under linux, it's pinned to 3.9 because of numba / llvmlite
-        "Programming Language :: Python :: 3.11",  # Might work under macos
-        "Programming Language :: Python :: 3.12",  # Numba is officially unsupported on 3.12
+        "Programming Language :: Python :: 3.11",
+        "Programming Language :: Python :: 3.12",
         "Topic :: Scientific/Engineering :: Hydrology",
     ],
     include_package_data=True,
     install_requires=[
         "numpy",
         "pandas",
-        "numba", # install numba into the virtual env first!!!!!!
+        "numba",  # install numba into the virtual env first!!!!!!
         "scipy",
     ],
     python_requires=">=3.11, <3.13",  # Restrict versions of Python
@@ -47,8 +46,8 @@ setup(
             "cftime",
             "jinja2",
             "boto3",
-            "netcdf4"
+            "netcdf4",
         ],
-        test=["pytest", "pytest-cov","ruff","mypy"],
+        test=["pytest", "pytest-cov", "ruff", "mypy"],
     ),
 )
