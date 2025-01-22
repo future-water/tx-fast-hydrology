@@ -30,7 +30,10 @@ def get_session():
         aws_secret_access_key=settings.secret_access_key,
     )
 
-def save_file_from_s3(bucket_name: str, object_key: str, local_dir: Path, target: str | Path | None = None):
+
+def save_file_from_s3(
+    bucket_name: str, object_key: str, local_dir: Path, target: str | Path | None = None
+):
     """
     Downloads a file from S3. If `target` is not provided, saves the file to the local path
     equivalent to `object_key`. Creates necessary directories if they don't exist.
@@ -74,6 +77,7 @@ def save_file_from_s3(bucket_name: str, object_key: str, local_dir: Path, target
         logger.exception("Unexpected error occurred while saving the file from S3")
         raise e
 
+
 def file_exists_in_bucket(bucket_name, object_key):
     """
     Check if a specific file exists in an S3 bucket.
@@ -102,7 +106,7 @@ def file_exists_in_bucket(bucket_name, object_key):
             raise e
 
 
-def upload_file_to_s3(bucket_name: str, s3_key: str , filename: Path):
+def upload_file_to_s3(bucket_name: str, s3_key: str, filename: Path):
     """
     Uploads a file to an S3 bucket and handles exceptions.
     """

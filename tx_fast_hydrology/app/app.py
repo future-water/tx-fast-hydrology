@@ -1,7 +1,6 @@
 import os
-import time
+import random
 import tracemalloc
-from memory_profiler import profile
 from pathlib import Path
 from importlib import metadata
 import json as jsonlib
@@ -54,19 +53,29 @@ class TxFastHydrologySettings(BaseSettings):
     cache_dir: str = "./cache"
     gage_lookback_hours: int = 2
     s3_assets: list[S3Asset] = [
-        S3Asset(location="nwm_txdot_config/tx_fast_hydrology_assets/KF_v001/comids_mod.csv", target="comids_mod.csv"),
-        S3Asset(location="nwm_txdot_config/tx_fast_hydrology_assets/KF_v001/usgs_subset_attila.csv", target="usgs_subset_attila.csv"),
-        S3Asset(location="nwm_txdot_config/tx_fast_hydrology_assets/KF_v001/huc8_no_lake.json", target="huc8_no_lake.json"),
-        S3Asset(location="nwm_txdot_config/tx_fast_hydrology_assets/KF_v001/huc2_12_nhd_min.json", target="huc2_12_nhd_min.json"),
+        S3Asset(
+            location="nwm_txdot_config/tx_fast_hydrology_assets/KF_v001/comids_mod.csv",
+            target="comids_mod.csv",
+        ),
+        S3Asset(
+            location="nwm_txdot_config/tx_fast_hydrology_assets/KF_v001/usgs_subset_attila.csv",
+            target="usgs_subset_attila.csv",
+        ),
+        S3Asset(
+            location="nwm_txdot_config/tx_fast_hydrology_assets/KF_v001/huc8_no_lake.json",
+            target="huc8_no_lake.json",
+        ),
+        S3Asset(
+            location="nwm_txdot_config/tx_fast_hydrology_assets/KF_v001/huc2_12_nhd_min.json",
+            target="huc2_12_nhd_min.json",
+        ),
     ]
     tick_dt: float = 600
     # assets
     comids_path: str = "./cache/comids_mod.csv"
     gage_ids_path: str = "./cache/usgs_subset_attila.csv"
     model_path: str = "./cache/huc8_no_lake.json"
-    stream_network_path: str = (
-        "./cache/huc2_12_nhd_min.json"  # this is for the /map endpoint
-    )
+    stream_network_path: str = "./cache/huc2_12_nhd_min.json"  # this is for the /map endpoint
     # outputs
     streamflow_output_path: str = "nwm_txdot_output/short_range_da_kf/streamflow_kf_sr.nc"
 
@@ -82,38 +91,31 @@ def create_app() -> FastAPI:
 
         # get settings from env vars
         app.state.settings = TxFastHydrologySettings()
-        app.state.settings = cast(
-            TxFastHydrologySettings, app.state.settings
-        )  # help the typecheck
+        app.state.settings = cast(TxFastHydrologySettings, app.state.settings)  # help the typecheck
         # apply settings
         app.state.tick_dt = app.state.settings.tick_dt  # 10 minutes
 
-        Path(app.state.settings.cache_dir).mkdir(parents=True,exist_ok=True)
+        Path(app.state.settings.cache_dir).mkdir(parents=True, exist_ok=True)
 
         # Pull the necessary assets from S3
         for s3_asset in app.state.settings.s3_assets:
-            local_cache = (
-                Path(app.state.settings.cache_dir) / s3_asset.get_target_path()
-            )
+            local_cache = Path(app.state.settings.cache_dir) / s3_asset.get_target_path()
             if local_cache.exists():
                 continue
             s3_asset.resolve(cache_dir=Path(app.state.settings.cache_dir))
 
         # Check for required assets
-        app.state.all_ids = pd.read_csv(
-            app.state.settings.gage_ids_path
-        ).drop_duplicates(subset="comid")
-        app.state.comids = pd.read_csv(app.state.settings.comids_path, index_col=0)[
-            "0"
-        ].values
+        app.state.all_ids = pd.read_csv(app.state.settings.gage_ids_path).drop_duplicates(
+            subset="comid"
+        )
+        app.state.comids = pd.read_csv(app.state.settings.comids_path, index_col=0)["0"].values
 
         # Initialization logic
         logger.info("Initializing the simulation...")
         input_path = app.state.settings.model_path  # "./data/huc8_no_lake.json"
         gage_end_time = pd.to_datetime(datetime.now(timezone.utc))
         gage_start_time = pd.to_datetime(
-            datetime.now(timezone.utc)
-            - timedelta(hours=app.state.settings.gage_lookback_hours)
+            datetime.now(timezone.utc) - timedelta(hours=app.state.settings.gage_lookback_hours)
         )
 
         # app.state.all_ids = app.state.all_ids
@@ -121,9 +123,7 @@ def create_app() -> FastAPI:
         app.state.all_ids["from"] = gage_start_time.isoformat()
 
         logger.info("Downloading initial gage data...")
-        measurements = await download_gage_data(
-            app.state.all_ids.to_dict(orient="records")
-        )
+        measurements = await download_gage_data(app.state.all_ids.to_dict(orient="records"))
         measurements = measurements.reindex(
             app.state.all_ids["comid"].values.astype(str), axis=1
         ).fillna(0.0)
@@ -134,9 +134,7 @@ def create_app() -> FastAPI:
             checkpoint = CheckPoint(model, timedelta=3600)
             model.bind_callback(checkpoint, key="checkpoint")
             model_sites = [
-                reach_id
-                for reach_id in model.reach_ids
-                if reach_id in measurements.columns
+                reach_id for reach_id in model.reach_ids if reach_id in measurements.columns
             ]
             if model_sites:
                 basin_measurements = measurements[model_sites]
@@ -152,9 +150,7 @@ def create_app() -> FastAPI:
         streamflow = download_nwm_streamflow(
             nwm_dir, forecast_hour=forecast_hour, comids=app.state.comids
         )
-        inputs = download_nwm_forcings(
-            nwm_dir, forecast_hour=forecast_hour, comids=app.state.comids
-        )
+        inputs = download_nwm_forcings(nwm_dir, forecast_hour=forecast_hour, comids=app.state.comids)
 
         simulation = AsyncSimulation(model_collection, inputs)
         timestamp = streamflow.index.item()
@@ -176,11 +172,17 @@ def create_app() -> FastAPI:
 
         logger.info("Initialization complete. Starting periodic updates...")
 
-
         ds = xr.Dataset(
-            {"streamflow": (["time", "feature_id"], outputs.values)},
+            {
+                "streamflow": (["time", "feature_id"], outputs.iloc[1:].values),
+                "inputs": (["time", "feature_id"], inputs.values),
+                "diff": (
+                    ["time", "feature_id"],
+                    outputs.iloc[1:].values - inputs.values,
+                ),
+            },
             coords={
-                "time": outputs.index.tz_localize(None).astype("datetime64[ns]"),
+                "time": outputs.index[1:].tz_localize(None).astype("datetime64[ns]"),
                 "reference_time": ("reference_time", [np.datetime64(timestamp)]),
                 "feature_id": [int(f_id) for f_id in outputs.columns],
             },
@@ -188,21 +190,29 @@ def create_app() -> FastAPI:
                 "TITLE": "OUTPUT FROM Kalman-Filter by MDB",
                 "version": metadata.version("tx-fast-hydrology"),
                 "featureType": "timeSeries",
-                "proj4": "+proj=lcc +units=m +a=6370000.0 +b=6370000.0 +lat_1=30.0 +lat_2=60.0 +lat_0=40.0 +lon_0=-97.0",
+                "proj4": "+proj=lcc +units=m +a=6370000.0 +b=6370000.0 +lat_1=30.0 +lat_2=60.0 +lat_0=40.0 +lon_0=-97.0",  # noqa
                 "model_initialization_time": str(timestamp),
                 "station_dimension": "feature_id",
-                "model_output_valid_time": str(outputs.index[0]),
+                "model_output_valid_time": str(outputs.index[1]),
                 "model_configuration": "short_range",
                 "dev_OVRTSWCRT": 1,
                 "dev_NOAH_TIMESTEP": 3600,
                 "dev_channel_only": 0,
                 "dev_channelBucket_only": 0,
                 "dev": "dev_ prefix indicates development/internal metrics",
-                "units": "m3 s-1",
+                "kf_version": "0.1.0",
             },
         )
         ds["streamflow"].attrs["units"] = "m3 s-1"
-        ds.to_netcdf(Path(app.state.settings.cache_dir) / "streamflow_output.nc", engine="netcdf4")
+        ds["streamflow"].attrs["long_name"] = "River Flow with Kalman-Filter DA"
+        ds["inputs"].attrs["units"] = "m3 s-1"
+        ds["inputs"].attrs["long_name"] = "NWM inflow forcings"
+        ds["diff"].attrs["units"] = "m3 s-1"
+        ds["diff"].attrs["long_name"] = "Difference between NWM streamflow and KF strewamflow"
+        ds.to_netcdf(
+            Path(app.state.settings.cache_dir) / "streamflow_output.nc",
+            engine="netcdf4",
+        )
 
         upload_file_to_s3(
             bucket_name=S3Settings().bucket_name,
@@ -210,10 +220,7 @@ def create_app() -> FastAPI:
             filename=Path(app.state.settings.cache_dir) / "streamflow_output.nc",
         )
 
-
-        current, peak = (
-            tracemalloc.get_traced_memory()
-        )  # Get current and peak memory usage
+        current, peak = tracemalloc.get_traced_memory()  # Get current and peak memory usage
         logger.info(f"Current memory usage: {current / 1024**2:.2f} MB")
         logger.info(f"Peak memory usage: {peak / 1024**2:.2f} MB")
 
@@ -258,21 +265,14 @@ def create_app() -> FastAPI:
         time_index = streamflow.index.item()
         diff = outputs.loc[time_index, streamflow.columns] - streamflow
         pct_diff = diff / streamflow
-        diff = (
-            diff.loc[time_index].fillna(0.0).replace([np.inf, -np.inf], 0.0).to_dict()
-        )
-        pct_diff = (
-            pct_diff.loc[time_index]
-            .fillna(0.0)
-            .replace([np.inf, -np.inf], 0.0)
-            .to_dict()
-        )
+        diff = diff.loc[time_index].fillna(0.0).replace([np.inf, -np.inf], 0.0).to_dict()
+        pct_diff = pct_diff.loc[time_index].fillna(0.0).replace([np.inf, -np.inf], 0.0).to_dict()
         json_output = {"diff__cms": diff, "pct_diff__pct": pct_diff}
         return JSONResponse(content=json_output)
 
     @router.get("/map")
     async def map_handler(request: Request):
-        static_url = f"{request.base_url}static/style.css"
+        static_url = f"{request.base_url}static/style.css"  # noqa: F841
         stream_network = app.state.stream_network
         outputs = app.state.outputs
         streamflow = app.state.streamflow
@@ -297,9 +297,7 @@ def create_app() -> FastAPI:
             else:
                 feature["properties"]["change"] = 0
 
-        logger.info(
-            f"URL for static style.css: {request.url_for('static', filename='style.css')}"
-        )
+        logger.info(f"URL for static style.css: {request.url_for('static', filename='style.css')}")
 
         return templates.TemplateResponse(
             "show_page.html", {"request": request, "streams_json": stream_network}
@@ -317,6 +315,13 @@ def create_app() -> FastAPI:
     async def root_redirect():
         return RedirectResponse(url="/kf/docs")
 
+    @app.get("/health", include_in_schema=False)
+    async def health_check():
+        """
+        A simple health check endpoint to confirm the service is running.
+        """
+        return JSONResponse({"status": "OK"}, status_code=200)
+
     # app.include_router(router)
     # for route in app.routes:
     #     logger.info(f"Path: {route.path}, Name: {route.name}")
@@ -326,117 +331,143 @@ def create_app() -> FastAPI:
 async def tick(app: FastAPI):
     """Periodic background task to update simulation and state."""
     while True:
-        tracemalloc.start()  # Start tracing memory allocations
-        tick_dt = app.state.tick_dt
-        simulation = app.state.simulation
-        last_timestamp = app.state.current_timestamp
+        max_retries = 5  # Maximum number of retries before giving up
+        retry_delay = 5  # Initial delay in seconds between retries
+        attempt = 0
+        while attempt < max_retries:
+            try:
+                tracemalloc.start()  # Start tracing memory allocations
+                tick_dt = app.state.tick_dt
+                simulation = app.state.simulation
+                last_timestamp = app.state.current_timestamp
 
-        logger.info(f"Sleeping for {tick_dt} seconds...")
-        await asyncio.sleep(tick_dt)
+                logger.info(f"Sleeping for {tick_dt} seconds...")
+                await asyncio.sleep(tick_dt)
 
-        # Download new NWM forcings and streamflows
-        urls = get_forcing_directories()
-        nwm_dir, forecast_hour, timestamp = get_forecast_path(urls)
+                # Download new NWM forcings and streamflows
+                urls = get_forcing_directories()
+                nwm_dir, forecast_hour, timestamp = get_forecast_path(urls)
 
-        if timestamp > last_timestamp:
-            logger.info(f"New forcings available at timestamp {timestamp}")
-            streamflow = download_nwm_streamflow(
-                nwm_dir, forecast_hour=forecast_hour, comids=app.state.comids
-            )
-            logger.info("Streamflow downloaded")
-            inputs = download_nwm_forcings(
-                nwm_dir, forecast_hour=forecast_hour, comids=app.state.comids
-            )
-            logger.info("Forcings downloaded")
-            simulation.load_states()
-            simulation.inputs = simulation.load_inputs(inputs)
-            # Download gage data
-            gage_end_time = pd.to_datetime(datetime.now(timezone.utc))
-            gage_start_time = pd.to_datetime(
-                datetime.now(timezone.utc)
-                - timedelta(hours=app.state.settings.gage_lookback_hours)
-            )
-            # TODO: Check these start and end times
-            gage_end_time = max(gage_end_time, timestamp)
-            gage_start_time = min(gage_start_time, last_timestamp)
-            app.state.all_ids["to"] = gage_end_time.isoformat()
-            app.state.all_ids["from"] = gage_start_time.isoformat()
-            logger.info("Downloading gage data...")
-            measurements = await download_gage_data(
-                app.state.all_ids.to_dict(orient="records")
-            )
-            # Ensure that we always use the same ordering and columns
-            measurements = measurements.reindex(
-                app.state.all_ids["comid"].values.astype(str), axis=1
-            )
-            # TODO: This needs to be fixed eventually, filter out totally empty timeseries!!!!
-            measurements = measurements.fillna(0.0)
-            logger.info("Gage data downloaded")
-            logger.info("Assigning gage data to subbasin models...")
-            for model in simulation.model_collection.models.values():
-                if hasattr(model, "callbacks") and "kf" in model.callbacks:
-                    measurements_columns = model.callbacks["kf"].measurements.columns
-                    basin_measurements = measurements[measurements_columns]
-                    # print(f'Removing duplicate columns')
-                    # basin_measurements = basin_measurements.loc[:, ~basin_measurements.columns.duplicated()].copy()
-                    model.callbacks["kf"].measurements = basin_measurements
-            # Print current times
-            logger.info(
-                f"Gage start time: {measurements.index.min().isoformat()}\n"
-                f"Gage end time: {measurements.index.max().isoformat()}\n"
-                f"Input start time: {inputs.index.min().isoformat()}\n"
-                f"Input end time: {inputs.index.max().isoformat()}\n"
-                f"Model timestamp: {simulation.datetime.isoformat()}"
-            )
-            # Step model forward in time
-            logger.info("Beginning simulation...")
-            outputs = await simulation.simulate()
-            outputs = pd.concat([series for series in outputs.values()], axis=1)
-            logger.info("Simulation finished")
-            app.state.simulation = simulation
-            app.state.outputs = outputs
-            app.state.current_timestamp = timestamp
-            app.state.streamflow = streamflow
+                if timestamp > last_timestamp:
+                    logger.info(f"New forcings available at timestamp {timestamp}")
+                    streamflow = download_nwm_streamflow(
+                        nwm_dir, forecast_hour=forecast_hour, comids=app.state.comids
+                    )
+                    logger.info("Streamflow downloaded")
+                    inputs = download_nwm_forcings(
+                        nwm_dir, forecast_hour=forecast_hour, comids=app.state.comids
+                    )
+                    logger.info("Forcings downloaded")
+                    simulation.load_states()
+                    simulation.inputs = simulation.load_inputs(inputs)
+                    # Download gage data
+                    gage_end_time = pd.to_datetime(datetime.now(timezone.utc))
+                    gage_start_time = pd.to_datetime(
+                        datetime.now(timezone.utc)
+                        - timedelta(hours=app.state.settings.gage_lookback_hours)
+                    )
+                    # TODO: Check these start and end times
+                    gage_end_time = max(gage_end_time, timestamp)
+                    gage_start_time = min(gage_start_time, last_timestamp)
+                    app.state.all_ids["to"] = gage_end_time.isoformat()
+                    app.state.all_ids["from"] = gage_start_time.isoformat()
+                    logger.info("Downloading gage data...")
+                    measurements = await download_gage_data(
+                        app.state.all_ids.to_dict(orient="records")
+                    )
+                    # Ensure that we always use the same ordering and columns
+                    measurements = measurements.reindex(
+                        app.state.all_ids["comid"].values.astype(str), axis=1
+                    )
+                    # TODO: This needs to be fixed eventually, filter out totally empty timeseries!!!!  # noqa: E501
+                    measurements = measurements.fillna(0.0)
+                    logger.info("Gage data downloaded")
+                    logger.info("Assigning gage data to subbasin models...")
+                    for model in simulation.model_collection.models.values():
+                        if hasattr(model, "callbacks") and "kf" in model.callbacks:
+                            measurements_columns = model.callbacks["kf"].measurements.columns
+                            basin_measurements = measurements[measurements_columns]
+                            # print(f'Removing duplicate columns')
+                            # basin_measurements = basin_measurements.loc[:, ~basin_measurements.columns.duplicated()].copy()  # noqa: E501
+                            model.callbacks["kf"].measurements = basin_measurements
+                    # Print current times
+                    logger.info(
+                        f"Gage start time: {measurements.index.min().isoformat()}\n"
+                        f"Gage end time: {measurements.index.max().isoformat()}\n"
+                        f"Input start time: {inputs.index.min().isoformat()}\n"
+                        f"Input end time: {inputs.index.max().isoformat()}\n"
+                        f"Model timestamp: {simulation.datetime.isoformat()}"
+                    )
+                    # Step model forward in time
+                    logger.info("Beginning simulation...")
+                    outputs = await simulation.simulate()
+                    outputs = pd.concat([series for series in outputs.values()], axis=1)
+                    logger.info("Simulation finished")
+                    app.state.simulation = simulation
+                    app.state.outputs = outputs
+                    app.state.current_timestamp = timestamp
+                    app.state.streamflow = streamflow
 
-            # Export to S3
-            ds = xr.Dataset(
-                {"streamflow": (["time", "feature_id"], outputs.values)},
-                coords={
-                    "time": outputs.index.tz_localize(None).astype("datetime64[ns]"),
-                    "reference_time": ("reference_time", [np.datetime64(timestamp)]),
-                    "feature_id": [int(f_id) for f_id in outputs.columns],
-                },
-                attrs={
-                    "TITLE": "OUTPUT FROM Kalman-Filter by MDB",
-                    "version": metadata.version("tx-fast-hydrology"),
-                    "featureType": "timeSeries",
-                    "proj4": "+proj=lcc +units=m +a=6370000.0 +b=6370000.0 +lat_1=30.0 +lat_2=60.0 +lat_0=40.0 +lon_0=-97.0",
-                    "model_initialization_time": str(timestamp),
-                    "station_dimension": "feature_id",
-                    "model_output_valid_time": str(outputs.index[0]),
-                    "model_configuration": "short_range",
-                    "dev_OVRTSWCRT": 1,
-                    "dev_NOAH_TIMESTEP": 3600,
-                    "dev_channel_only": 0,
-                    "dev_channelBucket_only": 0,
-                    "dev": "dev_ prefix indicates development/internal metrics",
-                    "units": "m3 s-1",
-                },
-            )
-            ds["streamflow"].attrs["units"] = "m3 s-1"
-            ds.to_netcdf(Path(app.state.settings.cache_dir) / "streamflow_output.nc", engine="netcdf4")
+                    # Export to S3
 
-            upload_file_to_s3(
-                bucket_name=S3Settings().bucket_name,
-                s3_key=app.state.settings.streamflow_output_path,
-                filename=Path(app.state.settings.cache_dir) / "streamflow_output.nc",
-            )
-        else:
-            logger.info("No new forcings available; skipping update")
-        current, peak = (
-            tracemalloc.get_traced_memory()
-        )  # Get current and peak memory usage
-        logger.info(f"Current memory usage: {current / 1024**2:.2f} MB")
-        logger.info(f"Peak memory usage: {peak / 1024**2:.2f} MB")
+                    ds = xr.Dataset(
+                        {
+                            "streamflow": (["time", "feature_id"], outputs.iloc[1:].values),
+                            "inputs": (["time", "feature_id"], inputs.values),
+                            "diff": (
+                                ["time", "feature_id"],
+                                outputs.iloc[1:].values - inputs.values,
+                            ),
+                        },
+                        coords={
+                            "time": outputs.index[1:].tz_localize(None).astype("datetime64[ns]"),
+                            "reference_time": ("reference_time", [np.datetime64(timestamp)]),
+                            "feature_id": [int(f_id) for f_id in outputs.columns],
+                        },
+                        attrs={
+                            "TITLE": "OUTPUT FROM Kalman-Filter by MDB",
+                            "version": metadata.version("tx-fast-hydrology"),
+                            "featureType": "timeSeries",
+                            "proj4": "+proj=lcc +units=m +a=6370000.0 +b=6370000.0 +lat_1=30.0 +lat_2=60.0 +lat_0=40.0 +lon_0=-97.0",  # noqa: E501
+                            "model_initialization_time": str(timestamp),
+                            "station_dimension": "feature_id",
+                            "model_output_valid_time": str(outputs.index[1]),
+                            "model_configuration": "short_range",
+                            "dev_OVRTSWCRT": 1,
+                            "dev_NOAH_TIMESTEP": 3600,
+                            "dev_channel_only": 0,
+                            "dev_channelBucket_only": 0,
+                            "dev": "dev_ prefix indicates development/internal metrics",
+                            "units": "m3 s-1",
+                        },
+                    )
+                    ds["streamflow"].attrs["units"] = "m3 s-1"
+                    ds.to_netcdf(
+                        Path(app.state.settings.cache_dir) / "streamflow_output.nc",
+                        engine="netcdf4",
+                    )
 
-        tracemalloc.stop()  # Stop tracing memory allocations
+                    upload_file_to_s3(
+                        bucket_name=S3Settings().bucket_name,
+                        s3_key=app.state.settings.streamflow_output_path,
+                        filename=Path(app.state.settings.cache_dir) / "streamflow_output.nc",
+                    )
+                else:
+                    logger.info("No new forcings available; skipping update")
+                current, peak = tracemalloc.get_traced_memory()  # Get current and peak memory usage
+                logger.info(f"Current memory usage: {current / 1024**2:.2f} MB")
+                logger.info(f"Peak memory usage: {peak / 1024**2:.2f} MB")
+
+                tracemalloc.stop()  # Stop tracing memory allocations
+            except Exception as e:
+                attempt += 1
+                logger.error(f"Error occurred in tick (attempt {attempt}/{max_retries}): {e}")
+                if attempt < max_retries:
+                    backoff = retry_delay * (2 ** (attempt - 1))  # Exponential backoff
+                    jitter = random.uniform(0, 1)  # Optional jitter to avoid thundering herd
+                    delay = backoff + jitter
+                    logger.info(f"Retrying in {delay:.2f} seconds...")
+                    await asyncio.sleep(delay)
+                else:
+                    logger.error("Max retries reached. Giving up.")
+                    raise

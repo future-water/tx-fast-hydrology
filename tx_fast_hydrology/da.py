@@ -4,12 +4,12 @@ import datetime
 import logging
 import numpy as np
 import pandas as pd
-import scipy.linalg
-from tx_fast_hydrology.nutils import interpolate_sample, interpolate_samples
+from tx_fast_hydrology.nutils import interpolate_sample
 from tx_fast_hydrology.nutils import _ap_par, _aqat_par, _apply_gain
 from tx_fast_hydrology.callbacks import BaseCallback
 
 logger = logging.getLogger(__name__)
+
 
 class KalmanFilter(BaseCallback):
     def __init__(self, model, measurements, Q_cov, R_cov, P_t_init):
@@ -25,7 +25,7 @@ class KalmanFilter(BaseCallback):
         self.num_measurements = measurements.shape[1]
 
         assert isinstance(measurements.index, pd.core.indexes.datetimes.DatetimeIndex)
-        assert (measurements.index.tz == datetime.timezone.utc)
+        assert measurements.index.tz == datetime.timezone.utc
         assert np.in1d(measurements.columns, self.reach_ids).all()
 
         reach_index_map = pd.Series(np.arange(len(self.reach_ids)), index=self.reach_ids)
@@ -37,7 +37,7 @@ class KalmanFilter(BaseCallback):
         permutations = np.argsort(reach_indices)
         is_sorted = (permutations == np.arange(self.num_measurements)).all()
         if not is_sorted:
-            logger.warning('Measurement indices not sorted. Permuting columns...')
+            logger.warning("Measurement indices not sorted. Permuting columns...")
         reach_indices = reach_indices[permutations]
         self.reach_indices = reach_indices
         self.measurements = self.measurements.iloc[:, permutations]
@@ -68,13 +68,13 @@ class KalmanFilter(BaseCallback):
     def latest_timestamp(self):
         return self.measurements.index[-1]
 
-    def interpolate_input(self, datetime, method='linear'):
+    def interpolate_input(self, datetime, method="linear"):
         datetime = float(datetime.value)
         datetimes = self.measurements.index.astype(int).astype(float).values
         samples = self.measurements.values
-        if method == 'linear':
+        if method == "linear":
             method_code = 1
-        elif method == 'nearest':
+        elif method == "nearest":
             method_code = 0
         else:
             raise ValueError
@@ -95,7 +95,7 @@ class KalmanFilter(BaseCallback):
         o_t_next = self.model.o_t_next
         Q_cov = self.Q_cov
         R_cov = self.R_cov
-        measurements = self.measurements
+        measurements = self.measurements  # noqa: F841
         s = self.s
         startnodes = self.model.startnodes
         endnodes = self.model.endnodes
@@ -104,19 +104,18 @@ class KalmanFilter(BaseCallback):
         alpha = self.model.alpha
         beta = self.model.beta
         chi = self.model.chi
-        gamma = self.model.gamma
+        gamma = self.model.gamma  # noqa: F841
         datetime = self.model.datetime
         # Computed parameters
         Z = self.interpolate_input(datetime)
-        #Z = measurements.loc[datetime].values
+        # Z = measurements.loc[datetime].values
         dz = Z - o_t_next[s]
         # Compute prior covariance
         out = np.empty(P_t_prev.shape)
-        P_t_next = _aqat_par(P_t_prev, out, sub_startnodes, endnodes,
-                             alpha, beta, chi, indegree)
+        P_t_next = _aqat_par(P_t_prev, out, sub_startnodes, endnodes, alpha, beta, chi, indegree)
         P_t_next += Q_cov
         # Compute gain and posterior covariance
-        K = P_t_next[:,s] @ np.linalg.inv(P_t_next[s][:,s] + R_cov)
+        K = P_t_next[:, s] @ np.linalg.inv(P_t_next[s][:, s] + R_cov)
         # K = np.linalg.solve(P_t_next[s][:,s] + R_cov, P_t_next[s, :]).T
         gain = K @ dz
         P_t_next = P_t_next - K @ P_t_next[s]
@@ -126,7 +125,7 @@ class KalmanFilter(BaseCallback):
         o_t_next += o_t_gain
         # Save posterior estimates
         self.model.i_t_next = i_t_next
-        self.model.o_t_next = o_t_next        
+        self.model.o_t_next = o_t_next
         self.P_t_next = P_t_next
         self.P_t_prev = P_t_prev
         self.gain = gain
@@ -164,7 +163,7 @@ class KalmanSmoother(KalmanFilter):
 
     def __on_simulation_end__(self):
         return self.smooth()
-    
+
     def filter(self):
         # Implements KF after step is called
         P_t_prev = self.P_t_next
@@ -181,18 +180,17 @@ class KalmanSmoother(KalmanFilter):
         alpha = self.model.alpha
         beta = self.model.beta
         chi = self.model.chi
-        gamma = self.model.gamma
+        gamma = self.model.gamma  # noqa: F841
         datetime = self.model.datetime
         # Computed parameters
         Z = measurements.loc[datetime].values
         dz = Z - o_t_prior[s]
         # Compute prior covariance
         out = np.empty(P_t_prev.shape)
-        P_t_prior = _aqat_par(P_t_prev, out, sub_startnodes, endnodes,
-                              alpha, beta, chi, indegree)
+        P_t_prior = _aqat_par(P_t_prev, out, sub_startnodes, endnodes, alpha, beta, chi, indegree)
         P_t_prior += Q_cov
         # Compute gain and posterior covariance
-        K = P_t_prior[:,s] @ np.linalg.inv(P_t_prior[s][:,s] + R_cov)
+        K = P_t_prior[:, s] @ np.linalg.inv(P_t_prior[s][:, s] + R_cov)
         gain = K @ dz
         P_t_next = P_t_prior - K @ P_t_prior[s]
         # Apply gain
@@ -201,7 +199,7 @@ class KalmanSmoother(KalmanFilter):
         o_t_next = o_t_prior + o_t_gain
         # Save posterior estimates
         self.model.i_t_next = i_t_next
-        self.model.o_t_next = o_t_next        
+        self.model.o_t_next = o_t_next
         self.P_t_prev = P_t_prev
         self.P_t_next = P_t_next
         # Save outputs
@@ -237,12 +235,12 @@ class KalmanSmoother(KalmanFilter):
         alpha = self.model.alpha
         beta = self.model.beta
         chi = self.model.chi
-        gamma = self.model.gamma
+        gamma = self.model.gamma  # noqa: F841
         # Make this more efficient later
-        A = self.model.A
+        A = self.model.A  # noqa: F841
         for k in reversed(range(N)):
             t = datetimes[k]
-            tp1 = datetimes[k+1]
+            tp1 = datetimes[k + 1]
             P_f_t = P_f[t]
             out = np.empty(P_f_t.shape)
             A_Pf = _ap_par(P_f_t, out, sub_startnodes, endnodes, alpha, beta, chi, indegree)
@@ -253,9 +251,9 @@ class KalmanSmoother(KalmanFilter):
             i_hat_s[t] = i_t_s
             o_hat_s[t] = o_t_s
             P_s[t] = P
-        i_hat_s = pd.DataFrame.from_dict(i_hat_s, orient='index')
+        i_hat_s = pd.DataFrame.from_dict(i_hat_s, orient="index")
         i_hat_s.columns = self.model.reach_ids
-        o_hat_s = pd.DataFrame.from_dict(o_hat_s, orient='index')
+        o_hat_s = pd.DataFrame.from_dict(o_hat_s, orient="index")
         o_hat_s.columns = self.model.reach_ids
         self.i_hat_s = i_hat_s
         self.o_hat_s = o_hat_s
@@ -280,8 +278,8 @@ class KalmanSmootherIO(KalmanSmoother):
         self.temp_file = temp_file
         P_f = pd.DataFrame(self.P_t_next)
         P_p = pd.DataFrame(self.P_t_next)
-        P_f.to_hdf(f'{temp_file}', key=f'Pf__{epoch}', mode='a')
-        P_p.to_hdf(f'{temp_file}', key=f'Pp__{epoch}', mode='a')
+        P_f.to_hdf(f"{temp_file}", key=f"Pf__{epoch}", mode="a")
+        P_p.to_hdf(f"{temp_file}", key=f"Pp__{epoch}", mode="a")
         self.i_hat_s = None
         self.o_hat_s = None
 
@@ -305,7 +303,7 @@ class KalmanSmootherIO(KalmanSmoother):
         alpha = self.model.alpha
         beta = self.model.beta
         chi = self.model.chi
-        gamma = self.model.gamma
+        gamma = self.model.gamma  # noqa
         datetime = self.model.datetime
         epoch = str(self.model.datetime.value)
         # Computed parameters
@@ -313,11 +311,10 @@ class KalmanSmootherIO(KalmanSmoother):
         dz = Z - o_t_prior[s]
         # Compute prior covariance
         out = np.empty(P_t_prev.shape)
-        P_t_prior = _aqat_par(P_t_prev, out, sub_startnodes, endnodes,
-                              alpha, beta, chi, indegree)
+        P_t_prior = _aqat_par(P_t_prev, out, sub_startnodes, endnodes, alpha, beta, chi, indegree)
         P_t_prior += Q_cov
         # Compute gain and posterior covariance
-        K = P_t_prior[:,s] @ np.linalg.inv(P_t_prior[s][:,s] + R_cov)
+        K = P_t_prior[:, s] @ np.linalg.inv(P_t_prior[s][:, s] + R_cov)
         gain = K @ dz
         P_t_next = P_t_prior - K @ P_t_prior[s]
         # Apply gain
@@ -326,7 +323,7 @@ class KalmanSmootherIO(KalmanSmoother):
         o_t_next = o_t_prior + o_t_gain
         # Save posterior estimates
         self.model.i_t_next = i_t_next
-        self.model.o_t_next = o_t_next        
+        self.model.o_t_next = o_t_next
         self.P_t_prev = P_t_prev
         self.P_t_next = P_t_next
         # Save outputs
@@ -334,8 +331,8 @@ class KalmanSmootherIO(KalmanSmoother):
         self.i_hat_p[datetime] = i_t_prior
         self.o_hat_f[datetime] = o_t_next
         self.o_hat_p[datetime] = o_t_prior
-        pd.DataFrame(P_t_prior).to_hdf(f'{self.temp_file}', key=f'Pp__{epoch}', mode='a')
-        pd.DataFrame(P_t_next).to_hdf(f'{self.temp_file}', key=f'Pf__{epoch}', mode='a')
+        pd.DataFrame(P_t_prior).to_hdf(f"{self.temp_file}", key=f"Pp__{epoch}", mode="a")
+        pd.DataFrame(P_t_next).to_hdf(f"{self.temp_file}", key=f"Pf__{epoch}", mode="a")
         self.datetimes.append(datetime)
         # Update time
         self.datetime = datetime
@@ -350,7 +347,7 @@ class KalmanSmootherIO(KalmanSmoother):
         o_hat_p = self.o_hat_p
         i_hat_s = {}
         o_hat_s = {}
-        P_s_tp1 = pd.read_hdf(f'{temp_file}', key=f'Pf__{self.datetime.value}').values
+        P_s_tp1 = pd.read_hdf(f"{temp_file}", key=f"Pf__{self.datetime.value}").values
         i_hat_s[self.datetime] = i_hat_f[self.datetime]
         o_hat_s[self.datetime] = o_hat_f[self.datetime]
         startnodes = self.model.startnodes
@@ -362,9 +359,9 @@ class KalmanSmootherIO(KalmanSmoother):
         chi = self.model.chi
         for k in reversed(range(N)):
             t = datetimes[k]
-            tp1 = datetimes[k+1]
-            P_f_t = pd.read_hdf(f'{temp_file}', key=f'Pf__{t.value}').values
-            P_p_tp1 = pd.read_hdf(f'{temp_file}', key=f'Pp__{tp1.value}').values
+            tp1 = datetimes[k + 1]
+            P_f_t = pd.read_hdf(f"{temp_file}", key=f"Pf__{t.value}").values
+            P_p_tp1 = pd.read_hdf(f"{temp_file}", key=f"Pp__{tp1.value}").values
             out = np.empty(P_f_t.shape)
             A_Pf = _ap_par(P_f_t, out, sub_startnodes, endnodes, alpha, beta, chi, indegree)
             J = np.linalg.solve(P_p_tp1, A_Pf).T
@@ -374,9 +371,9 @@ class KalmanSmootherIO(KalmanSmoother):
             i_hat_s[t] = i_t_s
             o_hat_s[t] = o_t_s
             P_s_tp1 = P
-        i_hat_s = pd.DataFrame.from_dict(i_hat_s, orient='index')
+        i_hat_s = pd.DataFrame.from_dict(i_hat_s, orient="index")
         i_hat_s.columns = self.model.reach_ids
-        o_hat_s = pd.DataFrame.from_dict(o_hat_s, orient='index')
+        o_hat_s = pd.DataFrame.from_dict(o_hat_s, orient="index")
         o_hat_s.columns = self.model.reach_ids
         self.i_hat_s = i_hat_s
         self.o_hat_s = o_hat_s

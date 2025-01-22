@@ -1,17 +1,14 @@
-import os
 import datetime
 import asyncio
 import logging
-import uuid
-import json
-import numpy as np
 import pandas as pd
 from .muskingum import Muskingum
 from tx_fast_hydrology.callbacks import BaseCallback
 
 logger = logging.getLogger(__name__)
 
-class Simulation():
+
+class Simulation:
     def __init__(self, model_collection: dict[str,], inputs):
         self.model_collection = model_collection
         self.models = model_collection.models
@@ -37,7 +34,7 @@ class Simulation():
         for k in range(m):
             startnode = outer_startnodes[k]
             endnode = outer_endnodes[k]
-            while (outer_indegree_t[startnode] == 0):
+            while outer_indegree_t[startnode] == 0:
                 model_start = self.models[startnode]
                 p_t_start = self.inputs[startnode]
                 outputs = {}
@@ -45,7 +42,7 @@ class Simulation():
                 for state in model_start.simulate_iter(p_t_start, inc_t=True):
                     o_t_next = state.o_t_next
                     outputs[state.datetime] = o_t_next
-                outputs = pd.DataFrame.from_dict(outputs, orient='index')
+                outputs = pd.DataFrame.from_dict(outputs, orient="index")
                 outputs.index = pd.to_datetime(outputs.index, utc=True)
                 outputs.columns = p_t_start.columns
                 multi_outputs[startnode] = outputs
@@ -58,24 +55,21 @@ class Simulation():
                     index_in = self.node_map[endnode][entry_node]
                     reach_id_out = model_start.reach_ids[index_out]
                     reach_id_in = model_end.reach_ids[index_in]
-                    i_t_prev = outputs[reach_id_out].shift(1).iloc[1:].fillna(0.)
+                    i_t_prev = outputs[reach_id_out].shift(1).iloc[1:].fillna(0.0)
                     i_t_next = outputs[reach_id_out].iloc[1:]
                     gamma_in = model_end.gamma[index_in]
                     alpha_in = model_end.alpha[index_in]
                     beta_in = model_end.beta[index_in]
-                    self.inputs[endnode].loc[:, reach_id_in] += (alpha_in
-                                                                 * i_t_next.values
-                                                                 / gamma_in
-                                                               + beta_in
-                                                                 * i_t_prev.values
-                                                                 / gamma_in)
+                    self.inputs[endnode].loc[:, reach_id_in] += (
+                        alpha_in * i_t_next.values / gamma_in + beta_in * i_t_prev.values / gamma_in
+                    )
                     outer_indegree_t[endnode] -= 1
                     startnode = endnode
                     endnode = outer_endnodes[startnode]
                 else:
                     break
         return multi_outputs
-    
+
     @property
     def datetime(self):
         return self.model_collection.datetime
@@ -92,10 +86,11 @@ class Simulation():
     def set_datetime(self, timestamp):
         self.model_collection.set_datetime(timestamp)
 
+
 class AsyncSimulation(Simulation):
     def __init__(self, model_collection, inputs):
         return super().__init__(model_collection, inputs)
-    
+
     async def simulate(self):
         try:
             asyncio.get_running_loop()
@@ -109,19 +104,21 @@ class AsyncSimulation(Simulation):
         return self.outputs
 
     async def _main(self):
-        indegree = {model.name : len(model.sources) for model 
-                    in self.model_collection.models.values()}
+        indegree = {
+            model.name: len(model.sources) for model in self.model_collection.models.values()
+        }
         self._indegree = indegree
         async with asyncio.TaskGroup() as taskgroup:
             for name, predecessors in indegree.items():
                 if predecessors == 0:
                     model = self.models[name]
                     inputs = self.inputs[name]
-                    taskgroup.create_task(self._simulate(taskgroup, model,
-                                                         inputs, name))
+                    taskgroup.create_task(self._simulate(taskgroup, model, inputs, name))
 
-    async def _simulate(self, taskgroup: asyncio.TaskGroup, model: Muskingum, inputs: pd.DataFrame, name: str):
-        logger.debug(f'Started job for sub-watershed {name}')
+    async def _simulate(
+        self, taskgroup: asyncio.TaskGroup, model: Muskingum, inputs: pd.DataFrame, name: str
+    ):
+        logger.debug(f"Started job for sub-watershed {name}")
         start_time = model.datetime
         outputs = {}
         outputs[start_time] = model.o_t_next
@@ -129,7 +126,7 @@ class AsyncSimulation(Simulation):
             current_time = state.datetime
             o_t_next = state.o_t_next
             outputs[current_time] = o_t_next
-        outputs = pd.DataFrame.from_dict(outputs, orient='index')
+        outputs = pd.DataFrame.from_dict(outputs, orient="index")
         outputs.index = pd.to_datetime(outputs.index, utc=True)
         outputs.columns = inputs.columns
         self.outputs[name] = outputs
@@ -140,31 +137,33 @@ class AsyncSimulation(Simulation):
         startnode = name
         upstream_model = self.models[startnode]
         connections = upstream_model.sinks
-        #endnodes = model_start.sinks.keys()
-        #for endnode in endnodes:
+        # endnodes = model_start.sinks.keys()
+        # for endnode in endnodes:
         for connection in connections:
             downstream_model = connection.downstream_model
             endnode = downstream_model.name
             if startnode != endnode:
-                #model_end = self.models[endnode]
+                # model_end = self.models[endnode]
                 inputs = self.inputs[endnode]
                 upstream_index = connection.upstream_index
                 downstream_index = connection.downstream_index
                 reach_id_out = upstream_model.reach_ids[upstream_index]
                 reach_id_in = downstream_model.reach_ids[downstream_index]
                 # TODO: This seems fragile
-                i_t_prev = outputs[reach_id_out].shift(1).iloc[1:].fillna(0.)
+                i_t_prev = outputs[reach_id_out].shift(1).iloc[1:].fillna(0.0)
                 i_t_next = outputs[reach_id_out].iloc[1:]
                 gamma_in = downstream_model.gamma[downstream_index]
                 alpha_in = downstream_model.alpha[downstream_index]
                 beta_in = downstream_model.beta[downstream_index]
-                inputs.loc[:, reach_id_in] += (alpha_in * i_t_next.values / gamma_in
-                                            + beta_in * i_t_prev.values / gamma_in)
+                inputs.loc[:, reach_id_in] += (
+                    alpha_in * i_t_next.values / gamma_in + beta_in * i_t_prev.values / gamma_in
+                )
                 indegree[endnode] -= 1
-                if (indegree[endnode] == 0):
-                    taskgroup.create_task(self._simulate(taskgroup, downstream_model,
-                                                        inputs, endnode))
-        logger.debug(f'Finished job for sub-watershed {name}')
+                if indegree[endnode] == 0:
+                    taskgroup.create_task(
+                        self._simulate(taskgroup, downstream_model, inputs, endnode)
+                    )
+        logger.debug(f"Finished job for sub-watershed {name}")
 
 
 class CheckPoint(BaseCallback):
@@ -172,7 +171,7 @@ class CheckPoint(BaseCallback):
         self.model = model
         if checkpoint_time is None:
             if timedelta is None:
-                raise ValueError('Either `checkpoint_time` or `timedelta` must not be `None`.')
+                raise ValueError("Either `checkpoint_time` or `timedelta` must not be `None`.")
             else:
                 checkpoint_time = model.datetime + datetime.timedelta(seconds=timedelta)
         self.checkpoint_time = checkpoint_time
@@ -186,7 +185,7 @@ class CheckPoint(BaseCallback):
         else:
             checkpoint_time = self.model.datetime + datetime.timedelta(seconds=timedelta)
             self.set_checkpoint(checkpoint_time)
-    
+
     def __on_step_end__(self):
         checkpoint_time = self.checkpoint_time
         current_time = self.model.datetime
@@ -197,16 +196,16 @@ class CheckPoint(BaseCallback):
     def __on_save_state__(self):
         model = self.model
         for _, callback in model.callbacks.items():
-            if hasattr(callback, 'save_state'):
+            if hasattr(callback, "save_state"):
                 callback.save_state()
 
     def __on_load_state__(self):
         model = self.model
         for _, callback in model.callbacks.items():
-            if hasattr(callback, 'load_state'):
+            if hasattr(callback, "load_state"):
                 callback.load_state()
-    
+
     def set_checkpoint(self, checkpoint_time):
-        logger.info(f'Setting checkpoint time to {checkpoint_time}')
+        logger.info(f"Setting checkpoint time to {checkpoint_time}")
         self.checkpoint_time = checkpoint_time
         self.model_saved = False
