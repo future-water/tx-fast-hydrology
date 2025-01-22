@@ -182,15 +182,17 @@ def create_app() -> FastAPI:
                 ),
             },
             coords={
-                "time": outputs.index[1:].tz_localize(None).astype("datetime64[ns]"),
-                "reference_time": ("reference_time", [np.datetime64(timestamp)]),
+                "time": outputs.index[1:]
+                .tz_localize(None)
+                .astype("datetime64[ns]"),  # Ensure nanosecond precision
+                "reference_time": ("reference_time", [np.datetime64(timestamp).astype("datetime64[ns]")]),  # noqa: E501
                 "feature_id": [int(f_id) for f_id in outputs.columns],
             },
             attrs={
                 "TITLE": "OUTPUT FROM Kalman-Filter by MDB",
                 "version": metadata.version("tx-fast-hydrology"),
                 "featureType": "timeSeries",
-                "proj4": "+proj=lcc +units=m +a=6370000.0 +b=6370000.0 +lat_1=30.0 +lat_2=60.0 +lat_0=40.0 +lon_0=-97.0",  # noqa
+                "proj4": "+proj=lcc +units=m +a=6370000.0 +b=6370000.0 +lat_1=30.0 +lat_2=60.0 +lat_0=40.0 +lon_0=-97.0",  # noqa: E501
                 "model_initialization_time": str(timestamp),
                 "station_dimension": "feature_id",
                 "model_output_valid_time": str(outputs.index[1]),
@@ -203,12 +205,27 @@ def create_app() -> FastAPI:
                 "kf_version": "0.1.0",
             },
         )
-        ds["streamflow"].attrs["units"] = "m3 s-1"
-        ds["streamflow"].attrs["long_name"] = "River Flow with Kalman-Filter DA"
-        ds["inputs"].attrs["units"] = "m3 s-1"
-        ds["inputs"].attrs["long_name"] = "NWM inflow forcings"
-        ds["diff"].attrs["units"] = "m3 s-1"
-        ds["diff"].attrs["long_name"] = "Difference between NWM streamflow and KF strewamflow"
+        # Define attributes for each variable
+        variable_attrs = {
+            "streamflow": {
+                "units": "m3 s-1",
+                "long_name": "River Flow with Kalman-Filter DA",
+            },
+            "inputs": {
+                "units": "m3 s-1",
+                "long_name": "NWM inflow forcings",
+            },
+            "diff": {
+                "units": "m3 s-1",
+                "long_name": "Difference between NWM streamflow and KF streamflow",
+            },
+        }
+
+        # Apply attributes to each variable
+        for var_name, attrs in variable_attrs.items():
+            for attr_name, attr_value in attrs.items():
+                ds[var_name].attrs[attr_name] = attr_value
+
         ds.to_netcdf(
             Path(app.state.settings.cache_dir) / "streamflow_output.nc",
             engine="netcdf4",
