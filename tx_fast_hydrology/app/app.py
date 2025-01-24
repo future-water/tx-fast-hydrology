@@ -150,7 +150,9 @@ def create_app() -> FastAPI:
         streamflow = download_nwm_streamflow(
             nwm_dir, forecast_hour=forecast_hour, comids=app.state.comids
         )
-        inputs = download_nwm_forcings(nwm_dir, forecast_hour=forecast_hour, comids=app.state.comids)
+        inputs, streamflow_nwm = download_nwm_forcings(
+            nwm_dir, forecast_hour=forecast_hour, comids=app.state.comids
+        )
 
         simulation = AsyncSimulation(model_collection, inputs)
         timestamp = streamflow.index.item()
@@ -172,20 +174,69 @@ def create_app() -> FastAPI:
 
         logger.info("Initialization complete. Starting periodic updates...")
 
+        all_o_t_gain = np.concatenate([model.o_t_gain for model in model_collection.models.values()])
+        all_reach_ids = np.concatenate(
+            [model.reach_ids for model in model_collection.models.values()]
+        )
+
+        # Create the DataFrame from the collected data
+        gain = pd.DataFrame(
+            data=[all_o_t_gain],  # Single row of o_t_gain values
+            columns=all_reach_ids,  # Reach IDs as column names
+            index=streamflow.index,  # Use the datetime index from streamflow
+        )
+
+        # Create a list of column sets
+        column_sets = [
+            set(streamflow.columns),
+            set(inputs.columns),
+            set(outputs.columns),
+            set(gain.columns),
+        ]
+
+        # Check if all column sets are identical
+        if all(column_sets[0] == col_set for col_set in column_sets[1:]):
+            logger.info("All column sets are consistent.")
+        else:
+            logger.error("Mismatch detected among column sets.")
+            logger.error("Output is skipped")
+
+        outputs = outputs.reindex(columns=streamflow.columns)
+        gain = gain.reindex(columns=streamflow.columns)
+        streamflow_nwm = streamflow_nwm.reindex(columns=streamflow.columns)
+
+        # Add NaN row to inputs at t0
+        inputs = pd.concat(
+            [pd.DataFrame([np.nan] * len(inputs.columns), index=inputs.columns).T, inputs]
+        )
+        inputs.index = outputs.index
+
+        # Add the AA streamflows to the nwm streamflows before the forecasts
+        streamflow_nwm = pd.concat([streamflow, streamflow_nwm])
+
         ds = xr.Dataset(
             {
-                "streamflow": (["time", "feature_id"], outputs.iloc[1:].values),
+                "streamflow": (["time", "feature_id"], outputs.values),
+                "streamflow_nwm": (["time", "feature_id"], streamflow_nwm.values),
                 "inputs": (["time", "feature_id"], inputs.values),
                 "diff": (
                     ["time", "feature_id"],
-                    outputs.iloc[1:].values - inputs.values,
+                    outputs.values - streamflow_nwm.values,
+                ),
+                "gain": (["reference_time", "feature_id"], gain.values),
+                "streamflow_nwm_aa": (
+                    ["reference_time", "feature_id"],
+                    streamflow.values,
                 ),
             },
             coords={
-                "time": outputs.index[1:]
-                .tz_localize(None)
-                .astype("datetime64[ns]"),  # Ensure nanosecond precision
-                "reference_time": ("reference_time", [np.datetime64(timestamp).astype("datetime64[ns]")]),  # noqa: E501
+                "time": outputs.index.tz_localize(None).astype(
+                    "datetime64[ns]"
+                ),  # Ensure nanosecond precision
+                "reference_time": (
+                    "reference_time",
+                    [np.datetime64(timestamp).astype("datetime64[ns]")],
+                ),  # noqa: E501
                 "feature_id": [int(f_id) for f_id in outputs.columns],
             },
             attrs={
@@ -195,7 +246,7 @@ def create_app() -> FastAPI:
                 "proj4": "+proj=lcc +units=m +a=6370000.0 +b=6370000.0 +lat_1=30.0 +lat_2=60.0 +lat_0=40.0 +lon_0=-97.0",  # noqa: E501
                 "model_initialization_time": str(timestamp),
                 "station_dimension": "feature_id",
-                "model_output_valid_time": str(outputs.index[1]),
+                "model_output_valid_time": str(outputs.index[0]),
                 "model_configuration": "short_range",
                 "dev_OVRTSWCRT": 1,
                 "dev_NOAH_TIMESTEP": 3600,
@@ -211,13 +262,25 @@ def create_app() -> FastAPI:
                 "units": "m3 s-1",
                 "long_name": "River Flow with Kalman-Filter DA",
             },
+            "streamflow_nwm": {
+                "units": "m3 s-1",
+                "long_name": "River Flow from the NWM",
+            },
             "inputs": {
                 "units": "m3 s-1",
-                "long_name": "NWM inflow forcings",
+                "long_name": "NWM inflow forcings= qBucket+qLatRunoff",
             },
             "diff": {
                 "units": "m3 s-1",
-                "long_name": "Difference between NWM streamflow and KF streamflow",
+                "long_name": "Difference between NWM (streamflow_nwm) and DA (streamflow)",
+            },
+            "gain": {
+                "units": "m3 s-1",
+                "long_name": "Lateral inflow correction from Kalman-Filter",
+            },
+            "streamflow_nwm_aa": {
+                "units": "m3 s-1",
+                "long_name": "River Flow from the NWM",
             },
         }
 
@@ -371,7 +434,8 @@ async def tick(app: FastAPI):
                         nwm_dir, forecast_hour=forecast_hour, comids=app.state.comids
                     )
                     logger.info("Streamflow downloaded")
-                    inputs = download_nwm_forcings(
+
+                    inputs, streamflow_nwm = download_nwm_forcings(
                         nwm_dir, forecast_hour=forecast_hour, comids=app.state.comids
                     )
                     logger.info("Forcings downloaded")
@@ -427,18 +491,75 @@ async def tick(app: FastAPI):
 
                     # Export to S3
 
+                    inputs = pd.concat([streamflow, inputs])
+                    all_o_t_gain = np.concatenate(
+                        [model.o_t_gain for model in simulation.model_collection.models.values()]
+                    )  # noqa: E501
+                    all_reach_ids = np.concatenate(
+                        [model.reach_ids for model in simulation.model_collection.models.values()]
+                    )  # noqa: E501
+
+                    # Create the DataFrame from the collected data
+                    gain = pd.DataFrame(
+                        data=[all_o_t_gain],  # Single row of o_t_gain values
+                        columns=all_reach_ids,  # Reach IDs as column names
+                        index=streamflow.index,  # Use the datetime index from streamflow
+                    )
+
+                    # Create a list of column sets
+                    column_sets = [
+                        set(streamflow.columns),
+                        set(inputs.columns),
+                        set(outputs.columns),
+                        set(gain.columns),
+                    ]
+
+                    # Check if all column sets are identical
+                    if all(column_sets[0] == col_set for col_set in column_sets[1:]):
+                        logger.info("All column sets are consistent.")
+                    else:
+                        logger.error("Mismatch detected among column sets.")
+                        logger.error("Output is skipped")
+
+                    outputs = outputs.reindex(columns=streamflow.columns)
+                    gain = gain.reindex(columns=streamflow.columns)
+                    streamflow_nwm = streamflow_nwm.reindex(columns=streamflow.columns)
+
+                    # Add NaN row to inputs at t0
+                    inputs = pd.concat(
+                        [
+                            pd.DataFrame([np.nan] * len(inputs.columns), index=inputs.columns).T,
+                            inputs,
+                        ]
+                    )
+                    inputs.index = outputs.index
+
+                    # Add the AA streamflows to the nwm streamflows before the forecasts
+                    streamflow_nwm = pd.concat([streamflow, streamflow_nwm])
+
                     ds = xr.Dataset(
                         {
-                            "streamflow": (["time", "feature_id"], outputs.iloc[1:].values),
+                            "streamflow": (["time", "feature_id"], outputs.values),
+                            "streamflow_nwm": (["time", "feature_id"], streamflow_nwm.values),
                             "inputs": (["time", "feature_id"], inputs.values),
                             "diff": (
                                 ["time", "feature_id"],
-                                outputs.iloc[1:].values - inputs.values,
+                                outputs.values - streamflow_nwm.values,
+                            ),
+                            "gain": (["reference_time", "feature_id"], gain.values),
+                            "streamflow_nwm_aa": (
+                                ["reference_time", "feature_id"],
+                                streamflow.values,
                             ),
                         },
                         coords={
-                            "time": outputs.index[1:].tz_localize(None).astype("datetime64[ns]"),
-                            "reference_time": ("reference_time", [np.datetime64(timestamp)]),
+                            "time": outputs.index.tz_localize(None).astype(
+                                "datetime64[ns]"
+                            ),  # Ensure nanosecond precision
+                            "reference_time": (
+                                "reference_time",
+                                [np.datetime64(timestamp).astype("datetime64[ns]")],
+                            ),  # noqa: E501
                             "feature_id": [int(f_id) for f_id in outputs.columns],
                         },
                         attrs={
@@ -448,17 +569,49 @@ async def tick(app: FastAPI):
                             "proj4": "+proj=lcc +units=m +a=6370000.0 +b=6370000.0 +lat_1=30.0 +lat_2=60.0 +lat_0=40.0 +lon_0=-97.0",  # noqa: E501
                             "model_initialization_time": str(timestamp),
                             "station_dimension": "feature_id",
-                            "model_output_valid_time": str(outputs.index[1]),
+                            "model_output_valid_time": str(outputs.index[0]),
                             "model_configuration": "short_range",
                             "dev_OVRTSWCRT": 1,
                             "dev_NOAH_TIMESTEP": 3600,
                             "dev_channel_only": 0,
                             "dev_channelBucket_only": 0,
                             "dev": "dev_ prefix indicates development/internal metrics",
-                            "units": "m3 s-1",
+                            "kf_version": "0.1.0",
                         },
                     )
-                    ds["streamflow"].attrs["units"] = "m3 s-1"
+                    # Define attributes for each variable
+                    variable_attrs = {
+                        "streamflow": {
+                            "units": "m3 s-1",
+                            "long_name": "River Flow with Kalman-Filter DA",
+                        },
+                        "streamflow_nwm": {
+                            "units": "m3 s-1",
+                            "long_name": "River Flow from the NWM",
+                        },
+                        "inputs": {
+                            "units": "m3 s-1",
+                            "long_name": "NWM inflow forcings= qBucket+qLatRunoff",
+                        },
+                        "diff": {
+                            "units": "m3 s-1",
+                            "long_name": "Difference between NWM (streamflow_nwm) and DA (streamflow)",  # noqa: E501
+                        },
+                        "gain": {
+                            "units": "m3 s-1",
+                            "long_name": "Lateral inflow correction from Kalman-Filter",
+                        },
+                        "streamflow_nwm_aa": {
+                            "units": "m3 s-1",
+                            "long_name": "River Flow from the NWM",
+                        },
+                    }
+
+                    # Apply attributes to each variable
+                    for var_name, attrs in variable_attrs.items():
+                        for attr_name, attr_value in attrs.items():
+                            ds[var_name].attrs[attr_name] = attr_value
+
                     ds.to_netcdf(
                         Path(app.state.settings.cache_dir) / "streamflow_output.nc",
                         engine="netcdf4",

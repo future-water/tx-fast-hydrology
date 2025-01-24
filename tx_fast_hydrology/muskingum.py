@@ -155,6 +155,7 @@ class Muskingum:
         self.logger = logging.getLogger(self.name)
         # Create arrays
         n = self.n
+        self.o_t_gain = np.zeros(n, dtype=np.float64)
         self.o_t_prev = np.zeros(n, dtype=np.float64)
         self.i_t_next = np.zeros(n, dtype=np.float64)
         self.i_t_prev = np.zeros(n, dtype=np.float64)

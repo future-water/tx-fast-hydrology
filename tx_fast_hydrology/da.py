@@ -126,9 +126,9 @@ class KalmanFilter(BaseCallback):
         # Save posterior estimates
         self.model.i_t_next = i_t_next
         self.model.o_t_next = o_t_next
+        self.model.o_t_gain = o_t_gain
         self.P_t_next = P_t_next
         self.P_t_prev = P_t_prev
-        self.gain = gain
         # Update time
         self.datetime = datetime
 

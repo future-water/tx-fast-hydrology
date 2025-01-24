@@ -179,7 +179,9 @@ def download_nwm_streamflow(nwm_dir, forecast_hour, comids, sleeptime=0.0):
     return streamflow
 
 
-def download_nwm_forcings(nwm_dir, forecast_hour, comids, sleeptime=0.0):
+def download_nwm_forcings(
+    nwm_dir: str, forecast_hour: int, comids: list[int], sleeptime: float = 0.0
+) -> tuple[pd.DataFrame, pd.DataFrame]:
     # Download NetCDF forcings
     datasets = {}
     for lookahead_hour in range(1, 19):
@@ -195,14 +197,19 @@ def download_nwm_forcings(nwm_dir, forecast_hour, comids, sleeptime=0.0):
     # Parse NetCDF forcings
     qSfcLatRunoff = {}
     qBucket = {}
+    streamflow_nwm = {}
     for key, dataset in datasets.items():
         datetime = pd.to_datetime(dataset["time"].values.item(), utc=True)
         runoff = dataset["qSfcLatRunoff"].sel(feature_id=comids).values
         bucket = dataset["qBucket"].sel(feature_id=comids).values
+        streamflow = dataset["streamflow"].sel(feature_id=comids).values
         qSfcLatRunoff[datetime] = runoff
         qBucket[datetime] = bucket
+        streamflow_nwm[datetime] = streamflow
     qSfcLatRunoff = pd.DataFrame.from_dict(qSfcLatRunoff, orient="index", columns=comids)
     qBucket = pd.DataFrame.from_dict(qBucket, orient="index", columns=comids)
+    streamflow_nwm = pd.DataFrame.from_dict(streamflow_nwm, orient="index", columns=comids)
+    streamflow_nwm.columns = streamflow_nwm.columns.astype(str)
     inputs = qSfcLatRunoff + qBucket
     inputs.columns = inputs.columns.astype(str)
-    return inputs
+    return inputs, streamflow_nwm
