@@ -160,8 +160,9 @@ def create_app() -> FastAPI:
         simulation.set_datetime(timestamp)
         simulation.init_states(streamflow_values)
         simulation.save_states()
-        outputs = await simulation.simulate()
+        outputs, gains = await simulation.simulate()
         outputs = pd.concat([series for series in outputs.values()], axis=1)
+        gains2 = pd.concat([series for series in gains.values()], axis=1)
 
         # Add initial objects to app state
         app.state.simulation = simulation
@@ -254,6 +255,11 @@ def create_app() -> FastAPI:
                 "dev_channelBucket_only": 0,
                 "dev": "dev_ prefix indicates development/internal metrics",
                 "kf_version": "0.1.0",
+                "kf_gages_USGS": 1,
+                "kf_gages_LCRA": 0,
+                "kf_gages_RQ30": 0,
+                "kf_probabilistic_output": 0,
+                "model_coverage": "Texas statewide",
             },
         )
         # Define attributes for each variable
@@ -419,6 +425,7 @@ async def tick(app: FastAPI):
                 tracemalloc.start()  # Start tracing memory allocations
                 tick_dt = app.state.tick_dt
                 simulation = app.state.simulation
+                simulation = cast(AsyncSimulation, simulation)  # help the typecheck
                 last_timestamp = app.state.current_timestamp
 
                 logger.info(f"Sleeping for {tick_dt} seconds...")
@@ -481,8 +488,9 @@ async def tick(app: FastAPI):
                     )
                     # Step model forward in time
                     logger.info("Beginning simulation...")
-                    outputs = await simulation.simulate()
+                    outputs, gains = await simulation.simulate()
                     outputs = pd.concat([series for series in outputs.values()], axis=1)
+                    gains2 = pd.concat([series for series in gains.values()], axis=1)
                     logger.info("Simulation finished")
                     app.state.simulation = simulation
                     app.state.outputs = outputs
@@ -491,7 +499,6 @@ async def tick(app: FastAPI):
 
                     # Export to S3
 
-                    inputs = pd.concat([streamflow, inputs])
                     all_o_t_gain = np.concatenate(
                         [model.o_t_gain for model in simulation.model_collection.models.values()]
                     )  # noqa: E501

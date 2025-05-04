@@ -95,6 +95,7 @@ class KalmanFilter(BaseCallback):
         o_t_next = self.model.o_t_next
         Q_cov = self.Q_cov
         R_cov = self.R_cov
+        # Measurements are used implicitly in self.interpoalte_input
         measurements = self.measurements  # noqa: F841
         s = self.s
         startnodes = self.model.startnodes

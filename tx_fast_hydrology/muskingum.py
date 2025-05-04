@@ -466,6 +466,8 @@ class Muskingum:
         beta = self.beta
         chi = self.chi
         gamma = self.gamma
+        # reset the gain vector, filter is only triggered if there are valid measurements
+        self.o_t_gain = np.full_like(self.o_t_next, np.nan)
         for _, callback in self.callbacks.items():
             callback.__on_step_start__()
         i_t_next, o_t_next = _ax_bu(

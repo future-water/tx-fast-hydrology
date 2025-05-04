@@ -39,6 +39,20 @@ def results_to_df(results: list[dict[str, Any]]) -> pd.DataFrame:
     combined_df = pd.concat(dataframes, axis=1)
     return combined_df
 
+async def fetch_last_values(client: httpx.AsyncClient, sem: asyncio.Semaphore, params: dict) -> dict:
+    url = f"{KISTERS_BASE_URL}/channels/{params['channel_id']}/timeSeries/lastValues"
+    request_params = {
+        # "to": params["to"],
+        # "from": params["from"],
+        "channel_id": params["channel_id"],
+        # "tsId": params["timeseries_id"],
+        # "format": "JSON",
+    }
+
+
+
+MAX_RETRIES = 5
+RETRY_DELAY = 30  # seconds
 
 async def fetch_data(client: httpx.AsyncClient, sem: asyncio.Semaphore, params: dict) -> dict:
     url = f"{KISTERS_BASE_URL}/channels/{params['channel_id']}/timeSeries/data"
@@ -51,25 +65,34 @@ async def fetch_data(client: httpx.AsyncClient, sem: asyncio.Semaphore, params: 
     }
 
     async with sem:  # Limit the concurrency
-        try:
-            response = await client.get(url, params=request_params)
-            response.raise_for_status()
-            result = response.json()
-            return {
-                "success": True,
-                "data": {
-                    "comid": params["comid"],
-                    "channel_id": params["channel_id"],
-                    "timeseries_id": params["timeseries_id"],
-                    **result[0]["locations"][0]["timeseries"][0],
-                },
-            }
-        except Exception as e:
-            return {
-                "success": False,
-                "error": f"{str(e)} - {response.text}",
-                "payload": params,
-            }
+        for attempt in range(1, MAX_RETRIES + 1):
+            try:
+                response = await client.get(url, params=request_params)
+                response.raise_for_status()
+                result = response.json()
+                return {
+                    "success": True,
+                    "data": {
+                        "comid": params["comid"],
+                        "channel_id": params["channel_id"],
+                        "timeseries_id": params["timeseries_id"],
+                        **result[0]["locations"][0]["timeseries"][0],
+                    },
+                }
+            except httpx.RequestError as e:
+                error_message = f"Attempt {attempt}/{MAX_RETRIES} - RequestError: {str(e)}"
+            except httpx.HTTPStatusError as e:
+                error_message = f"Attempt {attempt}/{MAX_RETRIES} - HTTPStatusError: {e.response.status_code} - {e.response.text}"
+            except Exception as e:
+                error_message = f"Attempt {attempt}/{MAX_RETRIES} - UnexpectedError: {str(e)}"
+            # If max retries reached, return failure
+            if attempt == MAX_RETRIES:
+                return {
+                    "success": False,
+                    "error": error_message,
+                    "payload": params,
+                }
+            await asyncio.sleep(RETRY_DELAY)
 
 
 async def download_gage_data(data_list: list[dict]):

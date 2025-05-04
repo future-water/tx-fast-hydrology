@@ -14,6 +14,7 @@ class Simulation:
         self.models = model_collection.models
         self.inputs = self.load_inputs(inputs)
         self.outputs = {}
+        self.gains = {}
 
     def load_inputs(self, inputs):
         input_collection = {}
@@ -101,7 +102,7 @@ class AsyncSimulation(Simulation):
             await self._main()
         else:
             asyncio.run(self._main())
-        return self.outputs
+        return self.outputs, self.gains
 
     async def _main(self):
         indegree = {
@@ -121,15 +122,23 @@ class AsyncSimulation(Simulation):
         logger.debug(f"Started job for sub-watershed {name}")
         start_time = model.datetime
         outputs = {}
+        gains = {}
         outputs[start_time] = model.o_t_next
         for state in model.simulate_iter(inputs):
             current_time = state.datetime
             o_t_next = state.o_t_next
+            o_t_gain = state.o_t_gain
             outputs[current_time] = o_t_next
+            gains[current_time] = o_t_gain
         outputs = pd.DataFrame.from_dict(outputs, orient="index")
         outputs.index = pd.to_datetime(outputs.index, utc=True)
         outputs.columns = inputs.columns
         self.outputs[name] = outputs
+        #get gains
+        gains = pd.DataFrame.from_dict(gains, orient="index")
+        gains.index = pd.to_datetime(gains.index, utc=True)
+        gains.columns = inputs.columns
+        self.gains[name] = gains
         taskgroup.create_task(self._accumulate(taskgroup, outputs, name))
 
     async def _accumulate(self, taskgroup: asyncio.TaskGroup, outputs: pd.DataFrame, name):
