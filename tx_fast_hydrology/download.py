@@ -14,21 +14,20 @@ from tqdm.asyncio import tqdm as tqdm_asyncio
 from tqdm import tqdm
 
 # Define the macros as environment variables or constants
-KISTERS_USER = os.environ['KISTERS_USER']
-KISTERS_PASS = os.environ['KISTERS_PASS']
-KISTERS_BASE_URL = os.environ['KISTERS_BASE_URL']
+KISTERS_USER = os.getenv("KISTERS_USER", "txdot-analytics@kisters.net")
+KISTERS_PASS = os.getenv("KISTERS_PASS", "dsKNahM3t!2")
+KISTERS_BASE_URL = os.getenv("KISTERS_BASE_URL", "https://na.datasphere.online/external")
 MAX_CONCURRENT_REQUESTS = 2
+
 
 def results_to_df(results: list[dict[str, Any]]) -> pd.DataFrame:
     dataframes = []
-    for result in tqdm(results, desc="Combining DataFrames"):
+    for result in tqdm(results, desc="Combining DataFrames", ncols=100):
         comid = result["comid"]
         data_entries = result.get("data", [])
 
         # Create a DataFrame with datetime index and comid as the column
-        df = pd.DataFrame(
-            data_entries, columns=["timestamp", "value", "quality", "remark"]
-        )
+        df = pd.DataFrame(data_entries, columns=["timestamp", "value", "quality", "remark"])
         if df.empty:  # Skip if the DataFrame is empty
             continue
         df["timestamp"] = pd.to_datetime(df["timestamp"])
@@ -40,9 +39,22 @@ def results_to_df(results: list[dict[str, Any]]) -> pd.DataFrame:
     combined_df = pd.concat(dataframes, axis=1)
     return combined_df
 
-async def fetch_data(
-    client: httpx.AsyncClient, sem: asyncio.Semaphore, params: dict
-) -> dict:
+async def fetch_last_values(client: httpx.AsyncClient, sem: asyncio.Semaphore, params: dict) -> dict:
+    url = f"{KISTERS_BASE_URL}/channels/{params['channel_id']}/timeSeries/lastValues"
+    request_params = {
+        # "to": params["to"],
+        # "from": params["from"],
+        "channel_id": params["channel_id"],
+        # "tsId": params["timeseries_id"],
+        # "format": "JSON",
+    }
+
+
+
+MAX_RETRIES = 5
+RETRY_DELAY = 30  # seconds
+
+async def fetch_data(client: httpx.AsyncClient, sem: asyncio.Semaphore, params: dict) -> dict:
     url = f"{KISTERS_BASE_URL}/channels/{params['channel_id']}/timeSeries/data"
     request_params = {
         "to": params["to"],
@@ -53,25 +65,35 @@ async def fetch_data(
     }
 
     async with sem:  # Limit the concurrency
-        try:
-            response = await client.get(url, params=request_params)
-            response.raise_for_status()
-            result = response.json()
-            return {
-                "success": True,
-                "data": {
-                    "comid": params["comid"],
-                    "channel_id": params["channel_id"],
-                    "timeseries_id": params["timeseries_id"],
-                    **result[0]["locations"][0]["timeseries"][0],
-                },
-            }
-        except Exception as e:
-            return {
-                "success": False,
-                "error": f"{str(e)} - {response.text}",
-                "payload": params,
-            }
+        for attempt in range(1, MAX_RETRIES + 1):
+            try:
+                response = await client.get(url, params=request_params)
+                response.raise_for_status()
+                result = response.json()
+                return {
+                    "success": True,
+                    "data": {
+                        "comid": params["comid"],
+                        "channel_id": params["channel_id"],
+                        "timeseries_id": params["timeseries_id"],
+                        **result[0]["locations"][0]["timeseries"][0],
+                    },
+                }
+            except httpx.RequestError as e:
+                error_message = f"Attempt {attempt}/{MAX_RETRIES} - RequestError: {str(e)}"
+            except httpx.HTTPStatusError as e:
+                error_message = f"Attempt {attempt}/{MAX_RETRIES} - HTTPStatusError: {e.response.status_code} - {e.response.text}"
+            except Exception as e:
+                error_message = f"Attempt {attempt}/{MAX_RETRIES} - UnexpectedError: {str(e)}"
+            # If max retries reached, return failure
+            if attempt == MAX_RETRIES:
+                return {
+                    "success": False,
+                    "error": error_message,
+                    "payload": params,
+                }
+            await asyncio.sleep(RETRY_DELAY)
+
 
 async def download_gage_data(data_list: list[dict]):
     # Lists to store results
@@ -83,17 +105,23 @@ async def download_gage_data(data_list: list[dict]):
         tasks = [fetch_data(client, sem, params) for params in data_list]
 
         # Use tqdm.asyncio.tqdm to add a progress bar to data fetching
-        results = await tqdm_asyncio.gather(*tasks, desc="Fetching Data", total=len(data_list))
+        results = await tqdm_asyncio.gather(
+            *tasks, desc="Fetching Data", total=len(data_list), ncols=100
+        )
     # Separate successful and unsuccessful requests
     for idx, result in enumerate(results):
         if result["success"]:
             successful_requests.append(result["data"])
-            successful_data_list.append(data_list[idx])  # Add corresponding row to successful_data_list
+            successful_data_list.append(
+                data_list[idx]
+            )  # Add corresponding row to successful_data_list
         else:
-            unsuccessful_requests.append({
-                "error": result["error"],
-                "payload": result["payload"],
-            })
+            unsuccessful_requests.append(
+                {
+                    "error": result["error"],
+                    "payload": result["payload"],
+                }
+            )
 
     # Save results to CSVs
     if successful_requests:
@@ -106,35 +134,36 @@ async def download_gage_data(data_list: list[dict]):
 
 
 def get_forcing_directories():
-    baseurl = 'https://nomads.ncep.noaa.gov/pub/data/nccf/com/nwm/prod'
-    regex = re.compile('^nwm\.\d{8}/$')
+    baseurl = "https://nomads.ncep.noaa.gov/pub/data/nccf/com/nwm/prod"
+    regex = re.compile(r"^nwm\.\d{8}/$")
     response = requests.get(baseurl)
     if response.status_code == 200:
-        doc = BeautifulSoup(response.text, 'lxml')
-        body = doc.find(name='body')
-        links = body.find_all(name='a')
+        doc = BeautifulSoup(response.text, "lxml")
+        body = doc.find(name="body")
+        links = body.find_all(name="a")
         urls = []
         for link in links:
-            if 'href' in link.attrs:
-                url = link.attrs['href']
+            if "href" in link.attrs:
+                url = link.attrs["href"]
                 match = regex.match(url)
                 if match:
                     urls.append(url)
-        return [f'{baseurl}/{url}' for url in urls]
+        return [f"{baseurl}/{url}" for url in urls]
     else:
         return []
 
+
 def get_latest_forecast_hour(nwm_dir):
-    regex = re.compile('^nwm\.t(\d{2})z\.short_range.channel_rt')
-    response = requests.get(f'{nwm_dir}/short_range/')
+    regex = re.compile(r"^nwm\.t(\d{2})z\.short_range.channel_rt")
+    response = requests.get(f"{nwm_dir}/short_range/")
     if response.status_code == 200:
-        doc = BeautifulSoup(response.content, 'lxml')
-        body = doc.find(name='body')
-        links = body.find_all(name='a')
+        doc = BeautifulSoup(response.content, "lxml")
+        body = doc.find(name="body")
+        links = body.find_all(name="a")
         forecast_start_hours = set()
         for link in links:
-            if 'href' in link.attrs:
-                url = link.attrs['href']
+            if "href" in link.attrs:
+                url = link.attrs["href"]
                 match = regex.match(url)
                 if match:
                     next_hour = int(match.group(1))
@@ -143,42 +172,47 @@ def get_latest_forecast_hour(nwm_dir):
     else:
         return None
 
+
 def get_forecast_path(nwm_dirs):
     for url in reversed(sorted(nwm_dirs)):
         forecast_hour = get_latest_forecast_hour(url)
         if forecast_hour is None:
             continue
         else:
-            date = pathlib.Path(url).name.split('.')[1]
-            hour = pd.to_timedelta(forecast_hour, unit='h')
+            date = pathlib.Path(url).name.split(".")[1]
+            hour = pd.to_timedelta(forecast_hour, unit="h")
             timestamp = pd.to_datetime(date, utc=True) + hour
             return url, forecast_hour, timestamp
-    raise LookupError('No files found.')
+    raise LookupError("No files found.")
 
-def download_nwm_streamflow(nwm_dir, forecast_hour, comids, sleeptime=0.):
-        # TODO: Should this include tm01 and tm02 as well?
-        nc_url = f'analysis_assim/nwm.t{forecast_hour:02}z.analysis_assim.channel_rt.tm00.conus.nc'
-        url = os.path.join(nwm_dir, nc_url)
-        response = requests.get(url)
-        if response.status_code == 200:
-            dataset = xr.load_dataset(io.BytesIO(response.content), engine='h5netcdf')
-        else:
-            raise PermissionError(response.status_code)
-        datetime = pd.to_datetime(dataset['time'].values.item(), utc=True)
-        streamflow = dataset['streamflow'].sel(feature_id=comids).values
-        streamflow = pd.DataFrame(pd.Series(streamflow, index=comids), columns=[datetime]).T
-        streamflow.columns = streamflow.columns.astype(str)
-        return streamflow
 
-def download_nwm_forcings(nwm_dir, forecast_hour, comids, sleeptime=0.):
+def download_nwm_streamflow(nwm_dir, forecast_hour, comids, sleeptime=0.0):
+    # TODO: Should this include tm01 and tm02 as well?
+    nc_url = f"analysis_assim/nwm.t{forecast_hour:02}z.analysis_assim.channel_rt.tm00.conus.nc"
+    url = os.path.join(nwm_dir, nc_url)
+    response = requests.get(url)
+    if response.status_code == 200:
+        dataset = xr.load_dataset(io.BytesIO(response.content), engine="h5netcdf")
+    else:
+        raise PermissionError(response.status_code)
+    datetime = pd.to_datetime(dataset["time"].values.item(), utc=True)
+    streamflow = dataset["streamflow"].sel(feature_id=comids).values
+    streamflow = pd.DataFrame(pd.Series(streamflow, index=comids), columns=[datetime]).T
+    streamflow.columns = streamflow.columns.astype(str)
+    return streamflow
+
+
+def download_nwm_forcings(
+    nwm_dir: str, forecast_hour: int, comids: list[int], sleeptime: float = 0.0
+) -> tuple[pd.DataFrame, pd.DataFrame]:
     # Download NetCDF forcings
     datasets = {}
     for lookahead_hour in range(1, 19):
-        nc_url = f'short_range/nwm.t{forecast_hour:02}z.short_range.channel_rt.f{lookahead_hour:03}.conus.nc'
+        nc_url = f"short_range/nwm.t{forecast_hour:02}z.short_range.channel_rt.f{lookahead_hour:03}.conus.nc"  # noqa
         url = os.path.join(nwm_dir, nc_url)
         response = requests.get(url)
         if response.status_code == 200:
-            dataset = xr.load_dataset(io.BytesIO(response.content), engine='h5netcdf')
+            dataset = xr.load_dataset(io.BytesIO(response.content), engine="h5netcdf")
         else:
             raise PermissionError(response.status_code)
         datasets[lookahead_hour] = dataset
@@ -186,14 +220,19 @@ def download_nwm_forcings(nwm_dir, forecast_hour, comids, sleeptime=0.):
     # Parse NetCDF forcings
     qSfcLatRunoff = {}
     qBucket = {}
+    streamflow_nwm = {}
     for key, dataset in datasets.items():
-        datetime = pd.to_datetime(dataset['time'].values.item(), utc=True)
-        runoff = dataset['qSfcLatRunoff'].sel(feature_id=comids).values
-        bucket = dataset['qBucket'].sel(feature_id=comids).values
+        datetime = pd.to_datetime(dataset["time"].values.item(), utc=True)
+        runoff = dataset["qSfcLatRunoff"].sel(feature_id=comids).values
+        bucket = dataset["qBucket"].sel(feature_id=comids).values
+        streamflow = dataset["streamflow"].sel(feature_id=comids).values
         qSfcLatRunoff[datetime] = runoff
         qBucket[datetime] = bucket
-    qSfcLatRunoff = pd.DataFrame.from_dict(qSfcLatRunoff, orient='index', columns=comids)
-    qBucket = pd.DataFrame.from_dict(qBucket, orient='index', columns=comids)
+        streamflow_nwm[datetime] = streamflow
+    qSfcLatRunoff = pd.DataFrame.from_dict(qSfcLatRunoff, orient="index", columns=comids)
+    qBucket = pd.DataFrame.from_dict(qBucket, orient="index", columns=comids)
+    streamflow_nwm = pd.DataFrame.from_dict(streamflow_nwm, orient="index", columns=comids)
+    streamflow_nwm.columns = streamflow_nwm.columns.astype(str)
     inputs = qSfcLatRunoff + qBucket
     inputs.columns = inputs.columns.astype(str)
-    return inputs    
+    return inputs, streamflow_nwm

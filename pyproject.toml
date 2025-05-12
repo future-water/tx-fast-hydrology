@@ -1,0 +1,89 @@
+[build-system]
+requires = ["setuptools>=61", "wheel", "setuptools_scm>=6.2"]
+
+
+[project]
+name = "tx_fast_hydrology"
+# version = "0.1"
+description = "Routing and data assimilation code for TxDOT FAST project."
+readme = "README.rst"
+authors = [{ name = "Matt Bartos", email = "mdbartos@utexas.edu" }]
+license = { text = "BSD-3" }
+dynamic = ["version"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "Natural Language :: English",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Hydrology",
+]
+keywords = ["hydrology", "routing", "data assimilation"]
+requires-python = ">=3.11, <3.13"
+dependencies = [
+    "numpy",
+    "pandas",
+    "numba>=0.60.0",  # Ensure numba is installed first manually if needed
+    "scipy",
+]
+
+[project.urls]
+Homepage = "https://future-water.org"
+
+[project.optional-dependencies]
+app = [
+    "requests",
+    "xarray",
+    # "sanic",
+    "beautifulsoup4",
+    "httpx",
+    "tqdm",
+    # "sanic-ext",
+    "lxml",
+    "scipy",
+    "h5netcdf",
+    "cftime",
+    "jinja2",
+    "boto3",
+    "netcdf4",
+    "uvicorn",
+    "memory_profiler",
+    "fastapi",
+    "loguru",
+    "pydantic",
+    "pydantic_settings"
+]
+test = [
+    "tx_fast_hydrology[app]",
+    "pytest",
+    "pytest-cov",
+    "ruff",
+    "mypy",
+]
+
+[tool.ruff]
+# Configuration for Ruff, if applicable
+line-length = 101
+select = ["E", "F", "W"]
+
+
+[tool.setuptools_scm]
+# equivalent to use_scm_version = True
+
+[tool.setuptools.packages]
+# find = { namespaces = true, include = ["kisters.*"] }
+
+[tool.mypy]
+# Configuration for mypy, if applicable
+python_version = "3.11"
+check_untyped_defs = true
+strict = true
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+addopts = "-vx --lf --cov=tx_fast_hydrology --cov-report=html --cov-report=term --cov-report=xml:cov.xml"
+testpaths = ["tests"]

@@ -1,8 +1,12 @@
+
+.vscode
+cache
+venv311
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
 *$py.class
-
 # C extensions
 *.so
 
@@ -25,6 +29,8 @@ share/python-wheels/
 .installed.cfg
 *.egg
 MANIFEST
+venv
+.venvs
 
 # PyInstaller
 #  Usually these files are written by a python script from a template

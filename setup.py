@@ -3,7 +3,7 @@
 from setuptools import setup
 
 setup(
-    name="tx-fast-hydrology",
+    name="tx_fast_hydrology",
     version="0.1",
     description="Routing and data assimilation code for TxDOT FAST project.",
     long_description="Routing and data assimilation code for TxDOT FAST project.",
@@ -27,10 +27,27 @@ setup(
     install_requires=[
         "numpy",
         "pandas",
-        "numba",
+        "numba",  # install numba into the virtual env first!!!!!!
         "scipy",
     ],
+    python_requires=">=3.11, <3.13",  # Restrict versions of Python
     extras_require=dict(
-        dev=["pytest", "pytest-cov"]
+        app=[
+            "requests",
+            "xarray",
+            "sanic",
+            "bs4",
+            "httpx",
+            "tqdm",
+            "sanic_ext",
+            "lxml",
+            "scipy",
+            "h5netcdf",
+            "cftime",
+            "jinja2",
+            "boto3",
+            "netcdf4",
+        ],
+        test=["pytest", "pytest-cov", "ruff", "mypy"],
     ),
 )
