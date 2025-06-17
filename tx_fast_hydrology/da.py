@@ -129,6 +129,9 @@ class KalmanFilter(BaseCallback):
         self.model.o_t_next = o_t_next        
         self.P_t_next = P_t_next
         self.P_t_prev = P_t_prev
+        self.K = K
+        self.dz = dz
+        self.gain = gain
         # Update time
         self.datetime = datetime
 
