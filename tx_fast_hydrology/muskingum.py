@@ -564,6 +564,12 @@ class Muskingum:
         return self.simulate_iter(dataframe, start_time=start_time, 
                                   end_time=end_time, o_t_init=o_t_init, **kwargs)
 
+    def set_transmissive_boundary(self, index):
+        self.alpha[index] = 1.
+        self.beta[index] = 0.
+        self.chi[index] = 0.
+        self.gamma[index] = 0.
+
     def save_state(self):
         self.logger.info(f'Saving state for model {self.name} at time {self.datetime}...')
         self.saved_states["datetime"] = self.datetime
@@ -585,7 +591,8 @@ class Muskingum:
         paths = self.paths
         for path in paths:
             for subpath in path:
-                ax.plot(subpath[:,0], subpath[:,1], *args, **kwargs)
+                plotting_path = np.asarray(subpath)
+                ax.plot(plotting_path[:,0], plotting_path[:,1], *args, **kwargs)
     
     def bind_callback(self, callback, key='callback'):
         assert isinstance(callback, BaseCallback)
@@ -734,10 +741,26 @@ class ModelCollection():
     @property
     def datetime(self):
         # NOTE: Throws exception if models do not have same datetime
-        collection_datetime, = set([model.datetime for model
+        collection_datetime = set([model.datetime for model
                                     in self.models.values()])
-        collection_datetime = pd.to_datetime(collection_datetime)
-        return collection_datetime
+        if len(collection_datetime) == 1:
+            collection_datetime = collection_datetime.pop()
+            collection_datetime = pd.to_datetime(collection_datetime)
+            return collection_datetime
+        else:
+            raise ValueError('Models must all have the same datetime')
+
+    @property
+    def timedelta(self):
+        # NOTE: Throws exception if models do not have same datetime
+        collection_timedelta = set([model.timedelta for model
+                                    in self.models.values()])
+        if len(collection_timedelta) == 1:
+            collection_timedelta = collection_timedelta.pop()
+            collection_timedelta = pd.to_timedelta(collection_timedelta)
+            return collection_timedelta
+        else:
+            raise ValueError('Models must all have the same timedelta')
 
     def load_states(self):
         for key in self.models:
