@@ -266,12 +266,18 @@ class SoilLayer():
             for time, value in zip(times, values):
                 heappush(queue, (time, value))
             # Add up runoff contributed up to current time step
+            min_time = self.datetime
+            max_time = self.datetime
             while queue:
                 time, value = heappop(queue)
+                min_time = min(time, min_time)
+                max_time = max(time, max_time)
                 if time > yield_time:
                     heappush(queue, (time, value))
                     break
                 result += value
+            time_diff = (max_time - min_time).seconds
+            result = result / time_diff
             Q_overflow_t[i] = result
         # TODO: Note that this is not a rate
         self.Q_overflow_t = Q_overflow_t
