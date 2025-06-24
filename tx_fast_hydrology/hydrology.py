@@ -6,6 +6,7 @@ import pandas as pd
 from numba import njit
 from scipy.integrate import odeint
 import copy
+from heapq import heappop, heappush
 
 DEFAULT_START_TIME = pd.to_datetime(0., utc=True)
 DEFAULT_TIMEDELTA = pd.to_timedelta(3600, unit='s')
@@ -23,9 +24,9 @@ class CFEModel():
         return self.timedelta.seconds
 
     def step(self, p_t, pet_t, dt=None, num_iter=40, eps=1e-5):
+        self.save_state()
         soil_layer = self.soil_layer
         groundwater_layer = self.groundwater_layer
-        self.save_state()
         S_t_prev = self.soil_layer.S_t.copy()
         S_gw_t_prev = self.groundwater_layer.S_gw_t.copy()
         for _ in range(num_iter):
@@ -55,6 +56,7 @@ class CFEModel():
                 S_gw_t_prev = groundwater_layer.S_gw_t.copy()
             else:
                 break
+        self.soil_layer.calculate_surface_runoff__giuh()
         self.datetime = self.datetime + self.timedelta
 
     def save_state(self):
@@ -141,8 +143,13 @@ class SoilLayer():
         # TODO: Check this
         self.K_perc = self.satdk * self.slop
 
+        # Runoff queues
+        self.runoff_queues = [[] for _ in range(self.S_t.size)]
+        self.Q_overflow_t = np.zeros(self.S_t.size, dtype=np.float64)
+
         # Nash cascade
         self.K_nash = 0.03  # Default value, but should be set in configuration file
+        self.nash_queues = [[] for _ in range(self.S_t.size)]
 
         self.saved_states = {
             'datetime' : copy.copy(self.datetime),
@@ -216,9 +223,34 @@ class SoilLayer():
         S_t_next = S_t_prev + dt * (I_t - et_soil_t - Q_lf_t - Q_perc_t)
         self.S_t = S_t_next
 
+    def calculate_surface_runoff__giuh(self):
+        dt = self.dt
+        runoff_queues = self.runoff_queues
+        yield_time = self.datetime + self.timedelta
+        Q_surf_t = self.Q_surf_t
+        giuh_timedeltas = self.giuh_timedeltas
+        giuh_values = self.giuh_values
+        Q_overflow_t = self.Q_overflow_t
+        for i, queue in enumerate(runoff_queues):
+            result = 0.
+            times = giuh_timedeltas[i] + yield_time
+            values = giuh_values[i] * Q_surf_t[i] * dt
+            # Push runoff to queue
+            for time, value in zip(times, values):
+                heappush(queue, (time, value))
+            # Add up runoff contributed up to current time step
+            while queue:
+                time, value = heappop(queue)
+                if time > yield_time:
+                    heappush(queue, (time, value))
+                    break
+                result += value
+            Q_overflow_t[i] = result
+        self.Q_overflow_t = Q_overflow_t
+
     def load_model(self, obj, load_optional=True):
         required_fields = {'alpha_fc', 'bb', 'D', 'satdk', 'satpsi', 'slop', 
-                           'smcmax', 'smcwlt', 'K_lf'}
+                           'smcmax', 'smcwlt', 'K_lf', 'giuh_values', 'giuh_timedeltas'}
         optional_fields = set()
         defaults = {}
         # Validate data
@@ -237,6 +269,8 @@ class SoilLayer():
             assert isinstance(obj['smcmax'], np.ndarray)
             assert isinstance(obj['smcwlt'], np.ndarray)
             assert isinstance(obj['K_lf'], np.ndarray)
+            assert isinstance(obj['giuh_values'], list)
+            assert isinstance(obj['giuh_timedeltas'], list)
             assert obj['alpha_fc'].dtype == np.float64
             assert obj['bb'].dtype == np.float64
             assert obj['D'].dtype == np.float64
@@ -246,6 +280,8 @@ class SoilLayer():
             assert obj['smcmax'].dtype == np.float64
             assert obj['smcwlt'].dtype == np.float64
             assert obj['K_lf'].dtype == np.float64
+            #assert obj['giuh_values'].dtype == np.float64
+            #assert obj['giuh_timedeltas'].dtype == pd.Timedelta
         except:
             raise TypeError('Typing of input arrays is incorrect.')
         try:
