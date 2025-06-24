@@ -40,12 +40,12 @@ class CFEModel():
             soil_layer.calculate_percolation_from_soil()
 
             # Soil moisture reservoir
-            soil_layer.calculate_soil_storage__explicit(dt)
+            soil_layer.calculate_soil_storage__trapezoidal(dt)
 
             # Groundwater model
             groundwater_layer.calculate_saturation_excess_overland_flow_from_gw()
             groundwater_layer.compute_groundwater_flux__exponential()  
-            groundwater_layer.calculate_groundwater_storage__explicit(dt)
+            groundwater_layer.calculate_groundwater_storage__trapezoidal(dt)
 
             # Continue iterating until convergence
             soil_rel_err = soil_layer.S_t - S_t_prev
@@ -131,6 +131,8 @@ class SoilLayer():
         # TODO: Arbitrary initialization
         self.S_t = self.S_max * 2 / 3
 
+        self.I_t = np.zeros(self.S_t.size, dtype=np.float64)
+        self.et_soil_t = np.zeros(self.S_t.size, dtype=np.float64)
         self.Q_lf_t = np.zeros(self.S_t.size, dtype=np.float64)
         self.Q_perc_t = np.zeros(self.S_t.size, dtype=np.float64)
         self.Q_surf_t = np.zeros(self.S_t.size, dtype=np.float64)
@@ -153,7 +155,11 @@ class SoilLayer():
 
         self.saved_states = {
             'datetime' : copy.copy(self.datetime),
-            'S_t' : self.S_t.copy()
+            'S_t' : self.S_t.copy(),
+            'I_t' : self.I_t.copy(),
+            'et_soil_t' : self.et_soil_t.copy(),
+            'Q_lf_t' : self.Q_lf_t.copy(),
+            'Q_perc_t' : self.Q_perc_t.copy()
         }
 
     @property
@@ -169,8 +175,12 @@ class SoilLayer():
         return self.parent.timedelta.seconds
 
     def save_state(self):
-        self.saved_states['datetime'] = self.datetime
+        self.saved_states['datetime'] = copy.copy(self.datetime)
         self.saved_states['S_t'] = self.S_t.copy()
+        self.saved_states['I_t'] = self.I_t.copy()
+        self.saved_states['et_soil_t'] = self.et_soil_t.copy()
+        self.saved_states['Q_lf_t'] = self.Q_lf_t.copy()
+        self.saved_states['Q_perc_t'] = self.Q_perc_t.copy()
 
     def load_state(self):
         self.datetime = self.saved_states['datetime']
@@ -223,6 +233,23 @@ class SoilLayer():
         S_t_next = S_t_prev + dt * (I_t - et_soil_t - Q_lf_t - Q_perc_t)
         self.S_t = S_t_next
 
+    def calculate_soil_storage__trapezoidal(self, dt):
+        if dt is None:
+            dt = self.dt
+        S_t_prev = self.saved_states['S_t']
+        I_t_prev = self.saved_states['I_t']
+        et_soil_t_prev = self.saved_states['et_soil_t']
+        Q_lf_t_prev = self.saved_states['Q_lf_t']
+        Q_perc_t_prev = self.saved_states['Q_perc_t']
+        I_t = self.I_t
+        et_soil_t = self.et_soil_t
+        Q_lf_t = self.Q_lf_t
+        Q_perc_t = self.Q_perc_t
+        f_prev = (I_t_prev - et_soil_t_prev - Q_lf_t_prev - Q_perc_t_prev)
+        f_next = (I_t - et_soil_t - Q_lf_t - Q_perc_t)
+        S_t_next = S_t_prev + dt / 2 * (f_prev + f_next)
+        self.S_t = S_t_next
+
     def calculate_surface_runoff__giuh(self):
         dt = self.dt
         runoff_queues = self.runoff_queues
@@ -246,6 +273,7 @@ class SoilLayer():
                     break
                 result += value
             Q_overflow_t[i] = result
+        # TODO: Note that this is not a rate
         self.Q_overflow_t = Q_overflow_t
 
     def load_model(self, obj, load_optional=True):
@@ -314,7 +342,8 @@ class GroundwaterLayer():
         self.Q_gw_t = np.zeros(self.S_gw_t.size, dtype=np.float64)
         self.saved_states = {
             'datetime' : copy.copy(self.datetime),
-            'S_gw_t' : self.S_gw_t.copy()
+            'S_gw_t' : self.S_gw_t.copy(),
+            'Q_gw_t' : self.Q_gw_t.copy()
         }
 
     @property
@@ -355,9 +384,23 @@ class GroundwaterLayer():
         S_gw_t_next = S_gw_t_prev + dt * (Q_perc_t - Q_gw_t)
         self.S_gw_t = S_gw_t_next
 
+    def calculate_groundwater_storage__trapezoidal(self, dt):
+        if dt is None:
+            dt = self.dt
+        Q_perc_t = self.Q_perc_t
+        Q_gw_t = self.Q_gw_t
+        S_gw_t_prev = self.saved_states['S_gw_t']
+        Q_perc_t_prev = self.parent.soil_layer.saved_states['Q_perc_t']
+        Q_gw_t_prev = self.saved_states['Q_gw_t']
+        f_prev = Q_perc_t_prev - Q_gw_t_prev
+        f_next = Q_perc_t - Q_gw_t
+        S_gw_t_next = S_gw_t_prev + dt / 2 * (f_prev + f_next)
+        self.S_gw_t = S_gw_t_next
+
     def save_state(self):
         self.saved_states['datetime'] = self.datetime
         self.saved_states['S_gw_t'] = self.S_gw_t.copy()
+        self.saved_states['Q_gw_t'] = self.Q_gw_t.copy()
 
     def load_state(self):
         self.datetime = self.saved_states['datetime']
