@@ -57,6 +57,7 @@ class CFEModel():
             else:
                 break
         self.soil_layer.calculate_surface_runoff__giuh()
+        self.soil_layer.calculate_nash_cascade()
         self.datetime = self.datetime + self.timedelta
 
     def save_state(self):
@@ -150,8 +151,9 @@ class SoilLayer():
         self.Q_overflow_t = np.zeros(self.S_t.size, dtype=np.float64)
 
         # Nash cascade
-        self.K_nash = 0.03  # Default value, but should be set in configuration file
-        self.nash_queues = [[] for _ in range(self.S_t.size)]
+        self.nash_storages = [np.zeros(num_cascades, dtype=np.float64)
+                              for num_cascades in self.num_nash_cascades]
+        self.Q_bucket_t = np.zeros(self.S_t.size, dtype=np.float64)
 
         self.saved_states = {
             'datetime' : copy.copy(self.datetime),
@@ -266,7 +268,7 @@ class SoilLayer():
             for time, value in zip(times, values):
                 heappush(queue, (time, value))
             # Add up runoff contributed up to current time step
-            min_time = self.datetime
+            min_time = yield_time
             max_time = self.datetime
             while queue:
                 time, value = heappop(queue)
@@ -282,9 +284,29 @@ class SoilLayer():
         # TODO: Note that this is not a rate
         self.Q_overflow_t = Q_overflow_t
 
+    def calculate_nash_cascade(self):
+        dt = self.dt
+        nash_storages = self.nash_storages
+        K_nash = self.K_nash
+        Q_lf_t = self.Q_lf_t
+        Q_bucket_t = self.Q_bucket_t
+        for i, storage in enumerate(nash_storages):
+            num_cascades = len(storage)
+            storage[0] += Q_lf_t[i] * dt
+            if num_cascades > 1:
+                for j in range(1, len(storage)):
+                    Q_cascade = K_nash[i] * storage[j-1] * dt
+                    storage[j] += Q_cascade
+                    storage[j-1] -= Q_cascade
+            Q_out = K_nash[i] * storage[-1]
+            Q_bucket_t[i] = Q_out
+            storage[-1] -= Q_out * dt
+        self.Q_bucket_t = Q_bucket_t
+
     def load_model(self, obj, load_optional=True):
         required_fields = {'alpha_fc', 'bb', 'D', 'satdk', 'satpsi', 'slop', 
-                           'smcmax', 'smcwlt', 'K_lf', 'giuh_values', 'giuh_timedeltas'}
+                           'smcmax', 'smcwlt', 'K_lf', 'giuh_values', 'giuh_timedeltas', 
+                           'K_nash', 'num_nash_cascades'}
         optional_fields = set()
         defaults = {}
         # Validate data
@@ -305,6 +327,8 @@ class SoilLayer():
             assert isinstance(obj['K_lf'], np.ndarray)
             assert isinstance(obj['giuh_values'], list)
             assert isinstance(obj['giuh_timedeltas'], list)
+            assert isinstance(obj['K_nash'], np.ndarray)
+            assert isinstance(obj['num_nash_cascades'], np.ndarray)
             assert obj['alpha_fc'].dtype == np.float64
             assert obj['bb'].dtype == np.float64
             assert obj['D'].dtype == np.float64
@@ -316,13 +340,16 @@ class SoilLayer():
             assert obj['K_lf'].dtype == np.float64
             #assert obj['giuh_values'].dtype == np.float64
             #assert obj['giuh_timedeltas'].dtype == pd.Timedelta
+            assert obj['K_nash'].dtype == np.float64
+            assert obj['num_nash_cascades'].dtype == np.int64
         except:
             raise TypeError('Typing of input arrays is incorrect.')
         try:
             # TODO: This too
             assert (obj['bb'].size == obj['D'].size == obj['satdk'].size ==
                     obj['satpsi'].size == obj['slop'].size == obj['smcmax'].size ==
-                    obj['smcwlt'].size == obj['K_lf'].size)
+                    obj['smcwlt'].size == obj['K_lf'].size == obj['K_nash'].size ==
+                    obj['num_nash_cascades'].size)
         except:
             raise ValueError('Arrays are not the same length')
         # If optional fields are desired, add to the set of fields
