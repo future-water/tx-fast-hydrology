@@ -17,7 +17,7 @@ class S3Settings(BaseSettings):
     class Config:
         env_file = "kisters_water.env"
         env_file_encoding = "utf-8"
-        secrets_dir = "/run/secrets"
+        # secrets_dir = "/run/secrets"
         # Assuming Pydantic v1 supports these configurations similarly
         extra = "ignore"  # This might need to be adjusted or removed based on actual support
         env_prefix = "S3_"  # Ensure this matches your .env file's variable prefixes
@@ -60,6 +60,7 @@ def save_file_from_s3(
         target.parent.mkdir(parents=True, exist_ok=True)
 
         # Download the file
+        logger.info(f"Attempting download: {object_key} at {bucket_name}, saved to: {target}")
         s3_client.download_file(bucket_name, object_key, target)
         logger.info(f"File {object_key} successfully downloaded to {target}")
         return True
