@@ -33,6 +33,7 @@ class CFEModel():
         S_surf_t_prev = surface_layer.S_surf_t.copy()
         S_t_prev = soil_layer.S_t.copy()
         S_gw_t_prev = groundwater_layer.S_gw_t.copy()
+        S_nash_t_prev = np.concatenate(soil_layer.S_nash_t)
         self.iter_elapsed = 0
         for _ in range(num_iter):
             # Rainfall and ET 
@@ -56,12 +57,16 @@ class CFEModel():
             groundwater_layer.compute_groundwater_flux__exponential()  
             groundwater_layer.calculate_groundwater_storage__trapezoidal(dt)
 
+            # Nash cascades
+            self.soil_layer.calculate_nash_cascade__trapezoidal()
+
             # Continue iterating until convergence
             surf_rel_err = surface_layer.S_surf_t - S_surf_t_prev
             soil_rel_err = soil_layer.S_t - S_t_prev
+            nash_rel_err = np.concatenate(soil_layer.S_nash_t) - S_nash_t_prev
             gw_rel_err = groundwater_layer.S_gw_t - S_gw_t_prev
             max_rel_err = max(np.abs(surf_rel_err).max(), np.abs(soil_rel_err).max(),
-                              np.abs(gw_rel_err).max())
+                              np.abs(gw_rel_err).max(), np.abs(nash_rel_err).max())
             self.iter_elapsed += 1
             if max_rel_err > eps:
                 S_surf_t_prev = surface_layer.S_surf_t.copy()
@@ -69,8 +74,10 @@ class CFEModel():
                 S_gw_t_prev = groundwater_layer.S_gw_t.copy()
             else:
                 break
+
+        # Compute runoff by convolution with GIUH
         self.surface_layer.calculate_surface_runoff__giuh()
-        self.soil_layer.calculate_nash_cascade()
+        # Update timestamp
         self.datetime = self.datetime + self.timedelta
 
     def save_state(self):
@@ -317,8 +324,8 @@ class SoilLayer():
         self.K_perc = self.satdk * self.slop
 
         # Nash cascade
-        self.nash_storages = [np.zeros(num_cascades, dtype=np.float64)
-                              for num_cascades in self.num_nash_cascades]
+        self.S_nash_t = [np.zeros(num_cascades, dtype=np.float64)
+                         for num_cascades in self.num_nash_cascades]
         self.q_bucket_t = np.zeros(self.parent.N, dtype=np.float64)
 
         self.saved_states = {
@@ -349,6 +356,7 @@ class SoilLayer():
         self.saved_states['et_soil_t'] = self.et_soil_t.copy()
         self.saved_states['q_lf_t'] = self.q_lf_t.copy()
         self.saved_states['q_perc_t'] = self.q_perc_t.copy()
+        self.saved_states['S_nash_t'] = copy.deepcopy(self.S_nash_t)
 
     def load_state(self):
         self.datetime = self.saved_states['datetime']
@@ -416,13 +424,13 @@ class SoilLayer():
         S_t_next = S_t_prev + dt / 2 * (f_prev + f_next)
         self.S_t = S_t_next
 
-    def calculate_nash_cascade(self):
+    def calculate_nash_cascade__sequential(self):
         dt = self.dt
-        nash_storages = self.nash_storages
+        S_nash_t = self.S_nash_t
         K_nash = self.K_nash
         q_lf_t = np.maximum(self.q_lf_t, 0.)
         q_bucket_t = self.q_bucket_t
-        for i, storage in enumerate(nash_storages):
+        for i, storage in enumerate(S_nash_t):
             num_cascades = len(storage)
             storage[0] += q_lf_t[i] * dt
             if num_cascades > 1:
@@ -433,6 +441,47 @@ class SoilLayer():
             q_out = max(K_nash[i] * storage[-1], 0.)
             q_bucket_t[i] = q_out
             storage[-1] -= q_out * dt
+        self.q_bucket_t = q_bucket_t
+
+    def calculate_nash_cascade__explicit(self):
+        dt = self.dt
+        S_nash_t = self.S_nash_t
+        S_nash_t_prev = self.saved_states['S_nash_t']
+        K_nash = self.K_nash
+        q_lf_t = self.q_lf_t
+        q_bucket_t = self.q_bucket_t
+        for i, S_nash_t_i in enumerate(S_nash_t):
+            S_nash_t_prev_i = S_nash_t_prev[i]
+            q_nash_out = np.maximum(K_nash[i] * S_nash_t_i, 0.)
+            q_nash_in = q_nash_out.copy()
+            q_nash_in[1:] = q_nash_out[:-1]
+            q_nash_in[0] = q_lf_t[i]
+            q_bucket_t[i] = q_nash_out[-1]
+            S_nash_t_i[:] = S_nash_t_prev_i + (q_nash_in - q_nash_out) * dt
+        self.q_bucket_t = q_bucket_t
+
+    def calculate_nash_cascade__trapezoidal(self):
+        dt = self.dt
+        S_nash_t = self.S_nash_t
+        S_nash_t_prev = self.saved_states['S_nash_t']
+        q_lf_t = self.q_lf_t
+        q_lf_t_prev = self.saved_states['q_lf_t']
+        q_bucket_t = self.q_bucket_t
+        K_nash = self.K_nash
+        for i, S_nash_t_i in enumerate(S_nash_t):
+            S_nash_t_prev_i = S_nash_t_prev[i]
+            q_nash_out = np.maximum(K_nash[i] * S_nash_t_i, 0.)
+            q_nash_in = q_nash_out.copy()
+            q_nash_in[1:] = q_nash_out[:-1]
+            q_nash_in[0] = q_lf_t[i]
+            q_nash_out_prev = np.maximum(K_nash[i] * S_nash_t_prev_i, 0.)
+            q_nash_in_prev = q_nash_out_prev.copy()
+            q_nash_in_prev[1:] = q_nash_out_prev[:-1]
+            q_nash_in_prev[0] = q_lf_t_prev[i]
+            f_next = q_nash_in - q_nash_out
+            f_prev = q_nash_in_prev - q_nash_out_prev
+            S_nash_t_i[:] = S_nash_t_prev_i + dt / 2 * (f_next + f_prev)
+            q_bucket_t[i] = (q_nash_out[-1] + q_nash_out_prev[-1]) / 2
         self.q_bucket_t = q_bucket_t
 
     def load_model(self, obj, load_optional=True):
