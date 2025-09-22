@@ -420,17 +420,17 @@ class SoilLayer():
         dt = self.dt
         nash_storages = self.nash_storages
         K_nash = self.K_nash
-        q_lf_t = self.q_lf_t
+        q_lf_t = np.maximum(self.q_lf_t, 0.)
         q_bucket_t = self.q_bucket_t
         for i, storage in enumerate(nash_storages):
             num_cascades = len(storage)
             storage[0] += q_lf_t[i] * dt
             if num_cascades > 1:
                 for j in range(1, len(storage)):
-                    q_cascade = K_nash[i] * storage[j-1] * dt
-                    storage[j] += q_cascade
-                    storage[j-1] -= q_cascade
-            q_out = K_nash[i] * storage[-1]
+                    q_cascade = max(K_nash[i] * storage[j-1], 0.)
+                    storage[j] += q_cascade * dt
+                    storage[j-1] -= q_cascade * dt
+            q_out = max(K_nash[i] * storage[-1], 0.)
             q_bucket_t[i] = q_out
             storage[-1] -= q_out * dt
         self.q_bucket_t = q_bucket_t
