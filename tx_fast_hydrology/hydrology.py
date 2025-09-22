@@ -16,6 +16,8 @@ DEFAULT_TIMEDELTA = pd.to_timedelta(3600, unit='s')
 class CFEModel():
     def __init__(self, data):
         self.load_model(data)
+        self.N = len(self.watershed_ids)
+        self.surface_layer = SurfaceLayer(self, data) 
         self.soil_layer = SoilLayer(self, data) 
         self.groundwater_layer = GroundwaterLayer(self, data)
 
@@ -23,21 +25,28 @@ class CFEModel():
     def dt(self):
         return self.timedelta.seconds
 
-    def step(self, p_t, pet_t, dt=None, num_iter=40, eps=1e-5):
+    def step(self, p_t, pet_t, dt=None, num_iter=40, eps=1e-9):
         self.save_state()
+        surface_layer = self.surface_layer
         soil_layer = self.soil_layer
         groundwater_layer = self.groundwater_layer
-        S_t_prev = self.soil_layer.S_t.copy()
-        S_gw_t_prev = self.groundwater_layer.S_gw_t.copy()
+        S_surf_t_prev = surface_layer.S_surf_t.copy()
+        S_t_prev = soil_layer.S_t.copy()
+        S_gw_t_prev = groundwater_layer.S_gw_t.copy()
+        self.iter_elapsed = 0
         for _ in range(num_iter):
             # Rainfall and ET 
             soil_layer.calculate_evaporation_from_rainfall(p_t, pet_t)
             soil_layer.calculate_evaporation_from_soil(pet_t)
             
             # Infiltration partitioning
-            soil_layer.calculate_infiltration_excess_runoff(p_t)
+            soil_layer.calculate_infiltration_rate(p_t)
             soil_layer.calculate_lateral_flow_in_soil()
             soil_layer.calculate_percolation_from_soil()
+
+            # Surface water reservoir
+            surface_layer.calculate_surface_runoff_rate()
+            surface_layer.calculate_surface_storage__trapezoidal(dt, p_t)
 
             # Soil moisture reservoir
             soil_layer.calculate_soil_storage__trapezoidal(dt)
@@ -48,28 +57,34 @@ class CFEModel():
             groundwater_layer.calculate_groundwater_storage__trapezoidal(dt)
 
             # Continue iterating until convergence
+            surf_rel_err = surface_layer.S_surf_t - S_surf_t_prev
             soil_rel_err = soil_layer.S_t - S_t_prev
             gw_rel_err = groundwater_layer.S_gw_t - S_gw_t_prev
-            max_rel_err = max(np.abs(soil_rel_err).max(), np.abs(gw_rel_err).max())
+            max_rel_err = max(np.abs(surf_rel_err).max(), np.abs(soil_rel_err).max(),
+                              np.abs(gw_rel_err).max())
+            self.iter_elapsed += 1
             if max_rel_err > eps:
+                S_surf_t_prev = surface_layer.S_surf_t.copy()
                 S_t_prev = soil_layer.S_t.copy()
                 S_gw_t_prev = groundwater_layer.S_gw_t.copy()
             else:
                 break
-        self.soil_layer.calculate_surface_runoff__giuh()
+        self.surface_layer.calculate_surface_runoff__giuh()
         self.soil_layer.calculate_nash_cascade()
         self.datetime = self.datetime + self.timedelta
 
     def save_state(self):
+        self.surface_layer.save_state()
         self.soil_layer.save_state()
         self.groundwater_layer.save_state()
 
     def load_state(self):
+        self.surface_layer.load_state()
         self.soil_layer.load_state()
         self.groundwater_layer.load_state()
 
     def load_model(self, obj, load_optional=True):
-        required_fields = {'name', 'datetime', 'timedelta', 'watershed_ids'}
+        required_fields = {'name', 'datetime', 'timedelta', 'watershed_ids', 'catchment_area_m2'}
         optional_fields = set()
         defaults = {}
         # Validate data
@@ -77,6 +92,162 @@ class CFEModel():
             assert required_fields.issubset(set(obj.keys()))
         except:
             raise ValueError(f'Model field must contain fields {required_fields}')
+        try:
+            # TODO: This can be condensed
+            assert isinstance(obj['watershed_ids'], list)
+            assert isinstance(obj['catchment_area_m2'], np.ndarray)
+            assert obj['catchment_area_m2'].dtype == np.float64
+        except:
+            raise TypeError('Typing of input arrays is incorrect.')
+        try:
+            # TODO: This too
+            assert (obj['catchment_area_m2'].size == len(obj['watershed_ids']))
+        except:
+            raise ValueError('Arrays are not the same length')
+        # If optional fields are desired, add to the set of fields
+        if load_optional:
+            fields = required_fields.union(optional_fields)
+        else:
+            fields = required_fields
+        # Iterate through fields and add as attributes to class instance
+        for field in fields:
+            if field in defaults:
+                default_value = defaults[field]
+                value = obj.setdefault(field, default_value)
+            else:
+                value = obj[field]
+            setattr(self, field, value)
+
+
+class SurfaceLayer():
+    def __init__(self, parent, data):
+        self.parent = parent
+        self.load_model(data)
+        self.S_surf_t = np.zeros(self.parent.N, dtype=np.float64)
+        self.q_surf_t = np.zeros(self.parent.N, dtype=np.float64)
+        self.q_overflow_t = np.zeros(self.parent.N, dtype=np.float64)
+        self.runoff_queues = [[] for _ in range(self.parent.N)]
+        self.saved_states = {
+            'datetime' : copy.copy(self.datetime),
+            'S_surf_t' : self.S_surf_t.copy(),
+            'q_surf_t' : self.q_surf_t.copy()
+        }
+
+    @property
+    def datetime(self):
+        return self.parent.datetime
+
+    @property
+    def timedelta(self):
+        return self.parent.timedelta
+
+    @property
+    def dt(self):
+        return self.parent.timedelta.seconds
+
+    def save_state(self):
+        self.saved_states['datetime'] = copy.copy(self.datetime)
+        self.saved_states['S_surf_t'] = self.S_surf_t.copy()
+        self.saved_states['q_surf_t'] = self.q_surf_t.copy()
+        self.saved_states['q_overflow_t'] = self.q_overflow_t.copy()
+
+    def load_state(self):
+        self.datetime = self.saved_states['datetime']
+        self.S_surf_t = self.saved_states['S_surf_t']
+
+    def calculate_surface_runoff_rate(self):
+        S_surf_t = self.S_surf_t
+        n = self.mannings_n
+        S_o = self.surf_slope
+        B = self.watershed_width
+        surf_area = self.parent.catchment_area_m2
+        h_t = np.maximum(S_surf_t, 0.)
+        q_surf_t = (1 / n) * h_t**(5/3) * B * np.sqrt(S_o) / surf_area
+        self.q_surf_t = q_surf_t
+
+    def calculate_surface_storage__explicit(self, dt, p_t):
+        if dt is None:
+            dt = self.dt
+        q_surf_t = self.q_surf_t
+        I_t = self.parent.soil_layer.I_t
+        S_surf_t_prev = self.saved_states['S_surf_t']
+        S_surf_t_next = S_surf_t_prev + dt * (p_t - I_t - q_surf_t)
+        self.S_surf_t = S_surf_t_next
+
+    def calculate_surface_storage__trapezoidal(self, dt, p_t):
+        if dt is None:
+            dt = self.dt
+        q_surf_t = self.q_surf_t
+        I_t = self.parent.soil_layer.I_t
+        S_surf_t_prev = self.saved_states['S_surf_t']
+        q_surf_t_prev = self.saved_states['q_surf_t']
+        I_t_prev = self.parent.soil_layer.saved_states['I_t']
+        f_prev = p_t - I_t_prev - q_surf_t_prev
+        f_next = p_t - I_t - q_surf_t
+        S_surf_t_next = S_surf_t_prev + dt / 2 * (f_prev + f_next)
+        self.S_surf_t = S_surf_t_next
+
+    def calculate_surface_runoff__giuh(self):
+        dt = self.dt
+        runoff_queues = self.runoff_queues
+        yield_time = self.datetime + self.timedelta
+        q_surf_t = self.q_surf_t
+        giuh_timedeltas = self.giuh_timedeltas
+        giuh_values = self.giuh_values
+        q_overflow_t = self.q_overflow_t
+        for i, queue in enumerate(runoff_queues):
+            result = 0.
+            times = giuh_timedeltas[i] + yield_time
+            values = giuh_values[i] * q_surf_t[i] * dt
+            # Push runoff to queue
+            for time, value in zip(times, values):
+                heappush(queue, (time, value))
+            # Add up runoff contributed up to current time step
+            min_time = yield_time
+            max_time = self.datetime
+            while queue:
+                time, value = heappop(queue)
+                min_time = min(time, min_time)
+                max_time = max(time, max_time)
+                if time > yield_time:
+                    heappush(queue, (time, value))
+                    break
+                result += value
+            time_diff = (max_time - min_time).seconds
+            result = result / time_diff
+            q_overflow_t[i] = result
+        # TODO: Note that this is not a rate
+        self.q_overflow_t = q_overflow_t
+
+    def load_model(self, obj, load_optional=True):
+        required_fields = {'giuh_values', 'giuh_timedeltas', 'surf_slope', 'mannings_n', 'watershed_width'}
+        optional_fields = set()
+        defaults = {}
+        # Validate data
+        try:
+            assert required_fields.issubset(set(obj.keys()))
+        except:
+            raise ValueError(f'Model field must contain fields {required_fields}')
+        try:
+            # TODO: This can be condensed
+            assert isinstance(obj['giuh_values'], list)
+            assert isinstance(obj['giuh_timedeltas'], list)
+            assert isinstance(obj['surf_slope'], np.ndarray)
+            assert isinstance(obj['mannings_n'], np.ndarray)
+            assert isinstance(obj['watershed_width'], np.ndarray)
+            assert obj['surf_slope'].dtype == np.float64
+            assert obj['mannings_n'].dtype == np.float64
+            assert obj['watershed_width'].dtype == np.float64
+            #assert obj['giuh_values'].dtype == np.float64
+            #assert obj['giuh_timedeltas'].dtype == pd.Timedelta
+        except:
+            raise TypeError('Typing of input arrays is incorrect.')
+        try:
+            # TODO: This too
+            assert (obj['surf_slope'].size == obj['mannings_n'].size == obj['watershed_width'].size)
+            assert (len(obj['giuh_values']) == len(obj['giuh_timedeltas']))
+        except:
+            raise ValueError('Arrays are not the same length')
         # If optional fields are desired, add to the set of fields
         if load_optional:
             fields = required_fields.union(optional_fields)
@@ -132,11 +303,10 @@ class SoilLayer():
         # TODO: Arbitrary initialization
         self.S_t = self.S_max * 2 / 3
 
-        self.I_t = np.zeros(self.S_t.size, dtype=np.float64)
-        self.et_soil_t = np.zeros(self.S_t.size, dtype=np.float64)
-        self.Q_lf_t = np.zeros(self.S_t.size, dtype=np.float64)
-        self.Q_perc_t = np.zeros(self.S_t.size, dtype=np.float64)
-        self.Q_surf_t = np.zeros(self.S_t.size, dtype=np.float64)
+        self.I_t = np.zeros(self.parent.N, dtype=np.float64)
+        self.et_soil_t = np.zeros(self.parent.N, dtype=np.float64)
+        self.q_lf_t = np.zeros(self.parent.N, dtype=np.float64)
+        self.q_perc_t = np.zeros(self.parent.N, dtype=np.float64)
 
         # Schaake partitioning
         self.refkdt = 3.0
@@ -146,22 +316,18 @@ class SoilLayer():
         # TODO: Check this
         self.K_perc = self.satdk * self.slop
 
-        # Runoff queues
-        self.runoff_queues = [[] for _ in range(self.S_t.size)]
-        self.Q_overflow_t = np.zeros(self.S_t.size, dtype=np.float64)
-
         # Nash cascade
         self.nash_storages = [np.zeros(num_cascades, dtype=np.float64)
                               for num_cascades in self.num_nash_cascades]
-        self.Q_bucket_t = np.zeros(self.S_t.size, dtype=np.float64)
+        self.q_bucket_t = np.zeros(self.parent.N, dtype=np.float64)
 
         self.saved_states = {
             'datetime' : copy.copy(self.datetime),
             'S_t' : self.S_t.copy(),
             'I_t' : self.I_t.copy(),
             'et_soil_t' : self.et_soil_t.copy(),
-            'Q_lf_t' : self.Q_lf_t.copy(),
-            'Q_perc_t' : self.Q_perc_t.copy()
+            'q_lf_t' : self.q_lf_t.copy(),
+            'q_perc_t' : self.q_perc_t.copy()
         }
 
     @property
@@ -181,8 +347,8 @@ class SoilLayer():
         self.saved_states['S_t'] = self.S_t.copy()
         self.saved_states['I_t'] = self.I_t.copy()
         self.saved_states['et_soil_t'] = self.et_soil_t.copy()
-        self.saved_states['Q_lf_t'] = self.Q_lf_t.copy()
-        self.saved_states['Q_perc_t'] = self.Q_perc_t.copy()
+        self.saved_states['q_lf_t'] = self.q_lf_t.copy()
+        self.saved_states['q_perc_t'] = self.q_perc_t.copy()
 
     def load_state(self):
         self.datetime = self.saved_states['datetime']
@@ -204,25 +370,23 @@ class SoilLayer():
         S_thresh = self.S_thresh
         S_max = self.S_max
         K_lf = self.K_lf
-        Q_lf_t = compute_lateral_flow_in_soil(S_t, S_thresh, S_max, K_lf)
-        self.Q_lf_t = Q_lf_t
+        q_lf_t = compute_lateral_flow_in_soil(S_t, S_thresh, S_max, K_lf)
+        self.q_lf_t = q_lf_t
 
     def calculate_percolation_from_soil(self):
         S_t = self.S_t
         S_thresh = self.S_thresh
         S_max = self.S_max
         K_perc = self.K_perc
-        Q_perc_t = compute_percolation_from_soil(S_t, S_thresh, S_max, K_perc)
-        self.Q_perc_t = Q_perc_t
+        q_perc_t = compute_percolation_from_soil(S_t, S_thresh, S_max, K_perc)
+        self.q_perc_t = q_perc_t
 
-    def calculate_infiltration_excess_runoff(self, p_t):
+    def calculate_infiltration_rate(self, p_t):
         S_t = self.S_t
         S_max = self.S_max
         schaake_constant = self.schaake_constant
         I_t = compute_infiltration_rate__schaake(S_t, p_t, S_max, schaake_constant)
-        Q_surf_t = p_t - I_t
         self.I_t = I_t
-        self.Q_surf_t = Q_surf_t
 
     def calculate_soil_storage__explicit(self, dt):
         if dt is None:
@@ -230,9 +394,9 @@ class SoilLayer():
         S_t_prev = self.saved_states['S_t']
         I_t = self.I_t
         et_soil_t = self.et_soil_t
-        Q_lf_t = self.Q_lf_t
-        Q_perc_t = self.Q_perc_t
-        S_t_next = S_t_prev + dt * (I_t - et_soil_t - Q_lf_t - Q_perc_t)
+        q_lf_t = self.q_lf_t
+        q_perc_t = self.q_perc_t
+        S_t_next = S_t_prev + dt * (I_t - et_soil_t - q_lf_t - q_perc_t)
         self.S_t = S_t_next
 
     def calculate_soil_storage__trapezoidal(self, dt):
@@ -241,67 +405,35 @@ class SoilLayer():
         S_t_prev = self.saved_states['S_t']
         I_t_prev = self.saved_states['I_t']
         et_soil_t_prev = self.saved_states['et_soil_t']
-        Q_lf_t_prev = self.saved_states['Q_lf_t']
-        Q_perc_t_prev = self.saved_states['Q_perc_t']
+        q_lf_t_prev = self.saved_states['q_lf_t']
+        q_perc_t_prev = self.saved_states['q_perc_t']
         I_t = self.I_t
         et_soil_t = self.et_soil_t
-        Q_lf_t = self.Q_lf_t
-        Q_perc_t = self.Q_perc_t
-        f_prev = (I_t_prev - et_soil_t_prev - Q_lf_t_prev - Q_perc_t_prev)
-        f_next = (I_t - et_soil_t - Q_lf_t - Q_perc_t)
+        q_lf_t = self.q_lf_t
+        q_perc_t = self.q_perc_t
+        f_prev = (I_t_prev - et_soil_t_prev - q_lf_t_prev - q_perc_t_prev)
+        f_next = (I_t - et_soil_t - q_lf_t - q_perc_t)
         S_t_next = S_t_prev + dt / 2 * (f_prev + f_next)
         self.S_t = S_t_next
-
-    def calculate_surface_runoff__giuh(self):
-        dt = self.dt
-        runoff_queues = self.runoff_queues
-        yield_time = self.datetime + self.timedelta
-        Q_surf_t = self.Q_surf_t
-        giuh_timedeltas = self.giuh_timedeltas
-        giuh_values = self.giuh_values
-        Q_overflow_t = self.Q_overflow_t
-        for i, queue in enumerate(runoff_queues):
-            result = 0.
-            times = giuh_timedeltas[i] + yield_time
-            values = giuh_values[i] * Q_surf_t[i] * dt
-            # Push runoff to queue
-            for time, value in zip(times, values):
-                heappush(queue, (time, value))
-            # Add up runoff contributed up to current time step
-            min_time = yield_time
-            max_time = self.datetime
-            while queue:
-                time, value = heappop(queue)
-                min_time = min(time, min_time)
-                max_time = max(time, max_time)
-                if time > yield_time:
-                    heappush(queue, (time, value))
-                    break
-                result += value
-            time_diff = (max_time - min_time).seconds
-            result = result / time_diff
-            Q_overflow_t[i] = result
-        # TODO: Note that this is not a rate
-        self.Q_overflow_t = Q_overflow_t
 
     def calculate_nash_cascade(self):
         dt = self.dt
         nash_storages = self.nash_storages
         K_nash = self.K_nash
-        Q_lf_t = self.Q_lf_t
-        Q_bucket_t = self.Q_bucket_t
+        q_lf_t = self.q_lf_t
+        q_bucket_t = self.q_bucket_t
         for i, storage in enumerate(nash_storages):
             num_cascades = len(storage)
-            storage[0] += Q_lf_t[i] * dt
+            storage[0] += q_lf_t[i] * dt
             if num_cascades > 1:
                 for j in range(1, len(storage)):
-                    Q_cascade = K_nash[i] * storage[j-1] * dt
-                    storage[j] += Q_cascade
-                    storage[j-1] -= Q_cascade
-            Q_out = K_nash[i] * storage[-1]
-            Q_bucket_t[i] = Q_out
-            storage[-1] -= Q_out * dt
-        self.Q_bucket_t = Q_bucket_t
+                    q_cascade = K_nash[i] * storage[j-1] * dt
+                    storage[j] += q_cascade
+                    storage[j-1] -= q_cascade
+            q_out = K_nash[i] * storage[-1]
+            q_bucket_t[i] = q_out
+            storage[-1] -= q_out * dt
+        self.q_bucket_t = q_bucket_t
 
     def load_model(self, obj, load_optional=True):
         required_fields = {'alpha_fc', 'bb', 'D', 'satdk', 'satpsi', 'slop', 
@@ -325,8 +457,6 @@ class SoilLayer():
             assert isinstance(obj['smcmax'], np.ndarray)
             assert isinstance(obj['smcwlt'], np.ndarray)
             assert isinstance(obj['K_lf'], np.ndarray)
-            assert isinstance(obj['giuh_values'], list)
-            assert isinstance(obj['giuh_timedeltas'], list)
             assert isinstance(obj['K_nash'], np.ndarray)
             assert isinstance(obj['num_nash_cascades'], np.ndarray)
             assert obj['alpha_fc'].dtype == np.float64
@@ -338,8 +468,6 @@ class SoilLayer():
             assert obj['smcmax'].dtype == np.float64
             assert obj['smcwlt'].dtype == np.float64
             assert obj['K_lf'].dtype == np.float64
-            #assert obj['giuh_values'].dtype == np.float64
-            #assert obj['giuh_timedeltas'].dtype == pd.Timedelta
             assert obj['K_nash'].dtype == np.float64
             assert obj['num_nash_cascades'].dtype == np.int64
         except:
@@ -371,12 +499,13 @@ class GroundwaterLayer():
     def __init__(self, parent, data):
         self.parent = parent
         self.load_model(data)
+        # TODO: Arbitrary instantiation
         self.S_gw_t = self.S_gw_max * 0.01
-        self.Q_gw_t = np.zeros(self.S_gw_t.size, dtype=np.float64)
+        self.q_gw_t = np.zeros(self.parent.N, dtype=np.float64)
         self.saved_states = {
             'datetime' : copy.copy(self.datetime),
             'S_gw_t' : self.S_gw_t.copy(),
-            'Q_gw_t' : self.Q_gw_t.copy()
+            'q_gw_t' : self.q_gw_t.copy()
         }
 
     @property
@@ -392,8 +521,8 @@ class GroundwaterLayer():
         return self.parent.timedelta.seconds
 
     @property
-    def Q_perc_t(self):
-        return self.parent.soil_layer.Q_perc_t
+    def q_perc_t(self):
+        return self.parent.soil_layer.q_perc_t
 
     def calculate_saturation_excess_overland_flow_from_gw(self):
         # When the groundwater storage is full, the overflowing amount goes to direct runoff
@@ -405,35 +534,35 @@ class GroundwaterLayer():
         S_gw_t = self.S_gw_t
         k_gw = self.k_gw
         S_gw_max = self.S_gw_max
-        Q_gw_t = C_gw * (np.exp(k_gw * S_gw_t / S_gw_max) - 1.)
-        self.Q_gw_t = Q_gw_t
+        q_gw_t = C_gw * (np.exp(k_gw * S_gw_t / S_gw_max) - 1.)
+        self.q_gw_t = q_gw_t
 
     def calculate_groundwater_storage__explicit(self, dt):
         if dt is None:
             dt = self.dt
-        Q_perc_t = self.Q_perc_t
-        Q_gw_t = self.Q_gw_t
+        q_perc_t = self.q_perc_t
+        q_gw_t = self.q_gw_t
         S_gw_t_prev = self.saved_states['S_gw_t']
-        S_gw_t_next = S_gw_t_prev + dt * (Q_perc_t - Q_gw_t)
+        S_gw_t_next = S_gw_t_prev + dt * (q_perc_t - q_gw_t)
         self.S_gw_t = S_gw_t_next
 
     def calculate_groundwater_storage__trapezoidal(self, dt):
         if dt is None:
             dt = self.dt
-        Q_perc_t = self.Q_perc_t
-        Q_gw_t = self.Q_gw_t
+        q_perc_t = self.q_perc_t
+        q_gw_t = self.q_gw_t
         S_gw_t_prev = self.saved_states['S_gw_t']
-        Q_perc_t_prev = self.parent.soil_layer.saved_states['Q_perc_t']
-        Q_gw_t_prev = self.saved_states['Q_gw_t']
-        f_prev = Q_perc_t_prev - Q_gw_t_prev
-        f_next = Q_perc_t - Q_gw_t
+        q_perc_t_prev = self.parent.soil_layer.saved_states['q_perc_t']
+        q_gw_t_prev = self.saved_states['q_gw_t']
+        f_prev = q_perc_t_prev - q_gw_t_prev
+        f_next = q_perc_t - q_gw_t
         S_gw_t_next = S_gw_t_prev + dt / 2 * (f_prev + f_next)
         self.S_gw_t = S_gw_t_next
 
     def save_state(self):
         self.saved_states['datetime'] = self.datetime
         self.saved_states['S_gw_t'] = self.S_gw_t.copy()
-        self.saved_states['Q_gw_t'] = self.Q_gw_t.copy()
+        self.saved_states['q_gw_t'] = self.q_gw_t.copy()
 
     def load_state(self):
         self.datetime = self.saved_states['datetime']
@@ -477,6 +606,7 @@ class GroundwaterLayer():
                 value = obj[field]
             setattr(self, field, value)
 
+
 @njit
 def compute_et_from_soil(S_t, S_thresh, S_wilt, pet_t):
     n = len(S_t)
@@ -495,28 +625,28 @@ def compute_et_from_soil(S_t, S_thresh, S_wilt, pet_t):
 @njit
 def compute_lateral_flow_in_soil(S_t, S_thresh, S_max, K_lf):
     n = len(S_t)
-    Q_lf_t = np.zeros(n, dtype=np.float64)
+    q_lf_t = np.zeros(n, dtype=np.float64)
     for i in range(n):
         if (S_t[i] >= S_thresh[i]):
-            Q_lf_t[i] = K_lf[i] * (S_t[i] - S_thresh[i]) / (S_max[i] - S_thresh[i])
+            q_lf_t[i] = K_lf[i] * (S_t[i] - S_thresh[i]) / (S_max[i] - S_thresh[i])
         elif (S_t[i] < S_thresh[i]):
-            Q_lf_t[i] = 0.
+            q_lf_t[i] = 0.
         else:
             raise ValueError('Check values of S_t and S_thresh')
-    return Q_lf_t
+    return q_lf_t
 
 @njit
 def compute_percolation_from_soil(S_t, S_thresh, S_max, K_perc):
     n = len(S_t)
-    Q_perc_t = np.zeros(n, dtype=np.float64)
+    q_perc_t = np.zeros(n, dtype=np.float64)
     for i in range(n):
         if (S_t[i] >= S_thresh[i]):
-            Q_perc_t[i] = K_perc[i] * (S_t[i] - S_thresh[i]) / (S_max[i] - S_thresh[i])
+            q_perc_t[i] = K_perc[i] * (S_t[i] - S_thresh[i]) / (S_max[i] - S_thresh[i])
         elif (S_t[i] < S_thresh[i]):
-            Q_perc_t[i] = 0.
+            q_perc_t[i] = 0.
         else:
             raise ValueError('Check values of S_t and S_thresh')
-    return Q_perc_t
+    return q_perc_t
 
 @njit
 def compute_infiltration_rate__schaake(S_t, p_t, S_max, schaake_constant):
