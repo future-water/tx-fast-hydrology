@@ -5,6 +5,7 @@ import numpy as np
 import pandas as pd
 from numba import njit
 from scipy.integrate import odeint
+from scipy.signal import lsim
 import copy
 from heapq import heappop, heappush
 
@@ -58,7 +59,7 @@ class CFEModel():
             groundwater_layer.calculate_groundwater_storage__trapezoidal(dt)
 
             # Nash cascades
-            self.soil_layer.calculate_nash_cascade__trapezoidal()
+            #self.soil_layer.calculate_nash_cascade__trapezoidal()
 
             # Continue iterating until convergence
             surf_rel_err = surface_layer.S_surf_t - S_surf_t_prev
@@ -75,6 +76,8 @@ class CFEModel():
             else:
                 break
 
+        # Compute nash cascade
+        self.soil_layer.calculate_nash_cascade__lsim()
         # Compute runoff by convolution with GIUH
         self.surface_layer.calculate_surface_runoff__giuh()
         # Update timestamp
@@ -324,8 +327,23 @@ class SoilLayer():
         self.K_perc = self.satdk * self.slop
 
         # Nash cascade
-        self.S_nash_t = [np.zeros(num_cascades, dtype=np.float64)
-                         for num_cascades in self.num_nash_cascades]
+        self.S_nash_t = []
+        self.nash_ss = []
+        for i in range(self.parent.N):
+            num_cascades_i = self.num_nash_cascades[i]
+            K_nash_i = self.K_nash[i]
+            S_nash_t_i = np.zeros(num_cascades_i, dtype=np.float64)
+            self.S_nash_t.append(S_nash_t_i)
+            Ks = np.repeat(K_nash_i, num_cascades_i)
+            A = np.diag(-Ks) + np.diag(Ks[:-1], k=-1)
+            B = np.zeros((Ks.size, 1))
+            B[0, 0] = 1.
+            C = np.zeros((1, Ks.size))
+            C[0, -1] = K_nash_i
+            D = np.zeros((1, 1))
+            ss_i = (A, B, C, D)
+            self.nash_ss.append(ss_i)
+
         self.q_bucket_t = np.zeros(self.parent.N, dtype=np.float64)
 
         self.saved_states = {
@@ -482,6 +500,27 @@ class SoilLayer():
             f_prev = q_nash_in_prev - q_nash_out_prev
             S_nash_t_i[:] = S_nash_t_prev_i + dt / 2 * (f_next + f_prev)
             q_bucket_t[i] = (q_nash_out[-1] + q_nash_out_prev[-1]) / 2
+        self.q_bucket_t = q_bucket_t
+
+    def calculate_nash_cascade__lsim(self):
+        dt = self.dt
+        S_nash_t = self.S_nash_t
+        S_nash_t_prev = self.saved_states['S_nash_t']
+        q_lf_t = self.q_lf_t
+        q_lf_t_prev = self.saved_states['q_lf_t']
+        nash_ss = self.nash_ss
+        q_bucket_t = self.q_bucket_t
+        for i in range(self.parent.N):
+            S_nash_t_prev_i = S_nash_t_prev[i]
+            ss_i = nash_ss[i]
+            q_lf_t_i = q_lf_t[i]
+            q_lf_t_prev_i = q_lf_t_prev[i]
+            t, y, x = lsim(ss_i, U=[q_lf_t_prev_i, q_lf_t_i], 
+                           T=[0, dt], 
+                           X0=S_nash_t_prev_i)
+            S_nash_t[i] = x[-1]
+            q_bucket_t[i] = y[-1]
+        self.S_nash_t = S_nash_t
         self.q_bucket_t = q_bucket_t
 
     def load_model(self, obj, load_optional=True):
