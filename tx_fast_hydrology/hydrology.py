@@ -86,9 +86,15 @@ class CFEModel():
                 break
 
         # Compute nash cascade
-        self.soil_layer.calculate_nash_cascade__lsim()
+        #self.soil_layer.calculate_soil_nash_cascade__lsim()
+        self.soil_layer.calculate_bucket_flow__nash(self.soil_layer.q_bucket_t, 
+                                                    self.soil_layer.q_lf_t, 
+                                                    self.soil_layer.saved_states['q_lf_t'])
         # Compute runoff by convolution with GIUH
-        self.surface_layer.calculate_surface_runoff__giuh()
+        self.surface_layer.calculate_surface_runoff__nash(self.surface_layer.q_overflow_t, 
+                                                          self.surface_layer.q_surf_t, 
+                                                          self.surface_layer.saved_states['q_surf_t'])
+        #self.surface_layer.calculate_surface_runoff__giuh()
         # Update timestamp
         self.datetime = self.datetime + self.timedelta
 
@@ -147,9 +153,29 @@ class SurfaceLayer():
         self.q_surf_t = np.zeros(self.parent.N, dtype=np.float64)
         self.q_overflow_t = np.zeros(self.parent.N, dtype=np.float64)
         self.runoff_queues = [[] for _ in range(self.parent.N)]
+
+        # Nash cascade
+        self.S_nash_t = []
+        self.nash_ss = []
+        for i in range(self.parent.N):
+            num_cascades_i = self.num_nash_cascades_surface[i]
+            K_nash_i = self.K_nash_surface[i]
+            S_nash_t_i = np.zeros(num_cascades_i, dtype=np.float64)
+            self.S_nash_t.append(S_nash_t_i)
+            Ks = np.repeat(K_nash_i, num_cascades_i)
+            A = np.diag(-Ks) + np.diag(Ks[:-1], k=-1)
+            B = np.zeros((Ks.size, 1))
+            B[0, 0] = 1.
+            C = np.zeros((1, Ks.size))
+            C[0, -1] = K_nash_i
+            D = np.zeros((1, 1))
+            ss_i = (A, B, C, D)
+            self.nash_ss.append(ss_i)
+
         self.saved_states = {
             'datetime' : copy.copy(self.datetime),
             'S_surf_t' : self.S_surf_t.copy(),
+            'S_nash_t' : copy.deepcopy(self.S_nash_t),
             'q_surf_t' : self.q_surf_t.copy()
         }
 
@@ -170,10 +196,12 @@ class SurfaceLayer():
         self.saved_states['S_surf_t'] = self.S_surf_t.copy()
         self.saved_states['q_surf_t'] = self.q_surf_t.copy()
         self.saved_states['q_overflow_t'] = self.q_overflow_t.copy()
+        self.saved_states['S_nash_t'] = copy.deepcopy(self.S_nash_t)
 
     def load_state(self):
         self.datetime = self.saved_states['datetime']
         self.S_surf_t = self.saved_states['S_surf_t']
+        self.S_nash_t = self.saved_states['S_nash_t']
 
     def calculate_surface_runoff_rate(self):
         S_surf_t = self.S_surf_t
@@ -208,6 +236,11 @@ class SurfaceLayer():
         return S_surf_t_next
         #self.S_surf_t = S_surf_t_next
 
+    def calculate_surface_runoff__nash(self, q_overflow_t, q_surf_t, q_surf_t_prev):
+        S_nash_t, q_overflow_t = calculate_nash_cascade__lsim(self, q_overflow_t, q_surf_t, q_surf_t_prev)
+        self.S_nash_t = S_nash_t
+        self.q_overflow_t = q_overflow_t
+
     def calculate_surface_runoff__giuh(self):
         dt = self.dt
         runoff_queues = self.runoff_queues
@@ -241,7 +274,8 @@ class SurfaceLayer():
         self.q_overflow_t = q_overflow_t
 
     def load_model(self, obj, load_optional=True):
-        required_fields = {'giuh_values', 'giuh_timedeltas', 'surf_slope', 'mannings_n', 'watershed_width'}
+        required_fields = {'giuh_values', 'giuh_timedeltas', 'surf_slope', 'mannings_n', 
+                           'watershed_width', 'K_nash_surface', 'num_nash_cascades_surface'}
         optional_fields = set()
         defaults = {}
         # Validate data
@@ -256,9 +290,13 @@ class SurfaceLayer():
             assert isinstance(obj['surf_slope'], np.ndarray)
             assert isinstance(obj['mannings_n'], np.ndarray)
             assert isinstance(obj['watershed_width'], np.ndarray)
+            assert isinstance(obj['K_nash_surface'], np.ndarray)
+            assert isinstance(obj['num_nash_cascades_surface'], np.ndarray)
             assert obj['surf_slope'].dtype == np.float64
             assert obj['mannings_n'].dtype == np.float64
             assert obj['watershed_width'].dtype == np.float64
+            assert obj['K_nash_surface'].dtype == np.float64
+            assert obj['num_nash_cascades_surface'].dtype == np.int64
             #assert obj['giuh_values'].dtype == np.float64
             #assert obj['giuh_timedeltas'].dtype == pd.Timedelta
         except:
@@ -266,7 +304,8 @@ class SurfaceLayer():
         try:
             # TODO: This too
             assert (obj['surf_slope'].size == obj['mannings_n'].size == obj['watershed_width'].size)
-            assert (len(obj['giuh_values']) == len(obj['giuh_timedeltas']))
+            assert (len(obj['giuh_values']) == len(obj['giuh_timedeltas']) == len(obj['K_nash_surface']) 
+                    == len(obj['num_nash_cascades_surface']))
         except:
             raise ValueError('Arrays are not the same length')
         # If optional fields are desired, add to the set of fields
@@ -360,6 +399,7 @@ class SoilLayer():
         self.saved_states = {
             'datetime' : copy.copy(self.datetime),
             'S_t' : self.S_t.copy(),
+            'S_nash_t' : copy.deepcopy(self.S_nash_t),
             'I_t' : self.I_t.copy(),
             'et_soil_t' : self.et_soil_t.copy(),
             'q_lf_t' : self.q_lf_t.copy(),
@@ -390,6 +430,7 @@ class SoilLayer():
     def load_state(self):
         self.datetime = self.saved_states['datetime']
         self.S_t = self.saved_states['S_t']
+        self.S_nash_t = self.saved_states['S_nash_t']
 
     def calculate_evaporation_from_rainfall(self, p_t, pet_t):
         et_rain_t = np.maximum(p_t, pet_t)
@@ -473,24 +514,8 @@ class SoilLayer():
             storage[-1] -= q_out * dt
         self.q_bucket_t = q_bucket_t
 
-    def calculate_nash_cascade__lsim(self):
-        dt = self.dt
-        S_nash_t = self.S_nash_t
-        S_nash_t_prev = self.saved_states['S_nash_t']
-        q_lf_t = self.q_lf_t
-        q_lf_t_prev = self.saved_states['q_lf_t']
-        nash_ss = self.nash_ss
-        q_bucket_t = self.q_bucket_t
-        for i in range(self.parent.N):
-            S_nash_t_prev_i = S_nash_t_prev[i]
-            ss_i = nash_ss[i]
-            q_lf_t_i = q_lf_t[i]
-            q_lf_t_prev_i = q_lf_t_prev[i]
-            t, y, x = lsim(ss_i, U=[q_lf_t_prev_i, q_lf_t_i], 
-                           T=[0, dt], 
-                           X0=S_nash_t_prev_i)
-            S_nash_t[i] = x[-1]
-            q_bucket_t[i] = y[-1]
+    def calculate_bucket_flow__nash(self, q_bucket_t, q_lf_t, q_lf_t_prev):
+        S_nash_t, q_bucket_t = calculate_nash_cascade__lsim(self, q_bucket_t, q_lf_t, q_lf_t_prev)
         self.S_nash_t = S_nash_t
         self.q_bucket_t = q_bucket_t
 
@@ -666,6 +691,23 @@ class GroundwaterLayer():
                 value = obj[field]
             setattr(self, field, value)
 
+
+def calculate_nash_cascade__lsim(layer, q_outflow_t, q_inflow_t, q_inflow_t_prev):
+    dt = layer.dt
+    S_nash_t = layer.S_nash_t
+    S_nash_t_prev = layer.saved_states['S_nash_t']
+    nash_ss = layer.nash_ss
+    for i in range(layer.parent.N):
+        S_nash_t_prev_i = S_nash_t_prev[i]
+        ss_i = nash_ss[i]
+        q_lf_t_i = q_inflow_t[i]
+        q_lf_t_prev_i = q_inflow_t_prev[i]
+        t, y, x = lsim(ss_i, U=[q_lf_t_prev_i, q_lf_t_i], 
+                        T=[0, dt], 
+                        X0=S_nash_t_prev_i)
+        S_nash_t[i] = x[-1]
+        q_outflow_t[i] = y[-1]
+    return S_nash_t, q_outflow_t
 
 @njit
 def compute_et_from_soil(S_t, S_thresh, S_wilt, pet_t):
