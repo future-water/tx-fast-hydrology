@@ -26,7 +26,8 @@ class CFEModel():
     def dt(self):
         return self.timedelta.seconds
 
-    def step(self, p_t, pet_t, dt=None, num_iter=40, eps=1e-9):
+    def step(self, p_t, pet_t, dt=None, num_iter=40, eps=1e-9,
+             max_learning_rate=0.5, min_learning_rate=0.01):
         self.save_state()
         surface_layer = self.surface_layer
         soil_layer = self.soil_layer
@@ -34,41 +35,49 @@ class CFEModel():
         S_surf_t_prev = surface_layer.S_surf_t.copy()
         S_t_prev = soil_layer.S_t.copy()
         S_gw_t_prev = groundwater_layer.S_gw_t.copy()
-        S_nash_t_prev = np.concatenate(soil_layer.S_nash_t)
         self.iter_elapsed = 0
         for _ in range(num_iter):
+            # Calculate fluxes
             # Rainfall and ET 
             soil_layer.calculate_evaporation_from_rainfall(p_t, pet_t)
             soil_layer.calculate_evaporation_from_soil(pet_t)
-            
             # Infiltration partitioning
             soil_layer.calculate_infiltration_rate(p_t)
             soil_layer.calculate_lateral_flow_in_soil()
             soil_layer.calculate_percolation_from_soil()
-
             # Surface water reservoir
             surface_layer.calculate_surface_runoff_rate()
-            surface_layer.calculate_surface_storage__trapezoidal(dt, p_t)
-
-            # Soil moisture reservoir
-            soil_layer.calculate_soil_storage__trapezoidal(dt)
-
             # Groundwater model
             groundwater_layer.calculate_saturation_excess_overland_flow_from_gw()
             groundwater_layer.compute_groundwater_flux__exponential()  
-            groundwater_layer.calculate_groundwater_storage__trapezoidal(dt)
 
-            # Nash cascades
-            #self.soil_layer.calculate_nash_cascade__trapezoidal()
+            # Calculate water storages
+            # Surface ponding
+            S_surf_t_next = surface_layer.calculate_surface_storage__trapezoidal(dt, p_t)
+            # Soil moisture reservoir
+            S_t_next = soil_layer.calculate_soil_storage__trapezoidal(dt)
+            # Groundwater storage
+            S_gw_t_next = groundwater_layer.calculate_groundwater_storage__trapezoidal(dt)
+
+            # Set new soil moisture states
+            #surf_ratio = S_surf_t_prev / (S_surf_t_next - S_surf_t_prev)
+            #soil_ratio = S_t_prev / (S_t_next - S_t_prev)
+            #gw_ratio = S_gw_t_prev / (S_gw_t_next - S_gw_t_prev)
+            #binding_ratio = min(surf_ratio.min(), soil_ratio.min(), gw_ratio.min())
+            #learning_rate = max(min(binding_ratio, max_learning_rate), min_learning_rate)
+            learning_rate = 0.25
+            self.surface_layer.S_surf_t = (1 - learning_rate) * S_surf_t_prev + (learning_rate) * S_surf_t_next
+            self.soil_layer.S_t = (1 - learning_rate) * S_t_prev + (learning_rate) * S_t_next
+            self.groundwater_layer.S_gw_t = (1 - learning_rate) * S_gw_t_prev + (learning_rate) * S_gw_t_next
 
             # Continue iterating until convergence
-            surf_rel_err = surface_layer.S_surf_t - S_surf_t_prev
-            soil_rel_err = soil_layer.S_t - S_t_prev
-            nash_rel_err = np.concatenate(soil_layer.S_nash_t) - S_nash_t_prev
-            gw_rel_err = groundwater_layer.S_gw_t - S_gw_t_prev
-            max_rel_err = max(np.abs(surf_rel_err).max(), np.abs(soil_rel_err).max(),
-                              np.abs(gw_rel_err).max(), np.abs(nash_rel_err).max())
             self.iter_elapsed += 1
+            surf_rel_err = S_surf_t_next - S_surf_t_prev
+            soil_rel_err = S_t_next - S_t_prev
+            gw_rel_err = S_gw_t_next - S_gw_t_prev
+            max_rel_err = max(np.abs(surf_rel_err).max(),
+                              np.abs(soil_rel_err).max(),
+                              np.abs(gw_rel_err).max())
             if max_rel_err > eps:
                 S_surf_t_prev = surface_layer.S_surf_t.copy()
                 S_t_prev = soil_layer.S_t.copy()
@@ -94,7 +103,8 @@ class CFEModel():
         self.groundwater_layer.load_state()
 
     def load_model(self, obj, load_optional=True):
-        required_fields = {'name', 'datetime', 'timedelta', 'watershed_ids', 'catchment_area_m2'}
+        required_fields = {'name', 'datetime', 'timedelta',
+                           'watershed_ids', 'catchment_area_m2'}
         optional_fields = set()
         defaults = {}
         # Validate data
@@ -195,7 +205,8 @@ class SurfaceLayer():
         f_prev = p_t - I_t_prev - q_surf_t_prev
         f_next = p_t - I_t - q_surf_t
         S_surf_t_next = S_surf_t_prev + dt / 2 * (f_prev + f_next)
-        self.S_surf_t = S_surf_t_next
+        return S_surf_t_next
+        #self.S_surf_t = S_surf_t_next
 
     def calculate_surface_runoff__giuh(self):
         dt = self.dt
@@ -440,7 +451,8 @@ class SoilLayer():
         f_prev = (I_t_prev - et_soil_t_prev - q_lf_t_prev - q_perc_t_prev)
         f_next = (I_t - et_soil_t - q_lf_t - q_perc_t)
         S_t_next = S_t_prev + dt / 2 * (f_prev + f_next)
-        self.S_t = S_t_next
+        return S_t_next
+        #self.S_t = S_t_next
 
     def calculate_nash_cascade__sequential(self):
         dt = self.dt
@@ -459,47 +471,6 @@ class SoilLayer():
             q_out = max(K_nash[i] * storage[-1], 0.)
             q_bucket_t[i] = q_out
             storage[-1] -= q_out * dt
-        self.q_bucket_t = q_bucket_t
-
-    def calculate_nash_cascade__explicit(self):
-        dt = self.dt
-        S_nash_t = self.S_nash_t
-        S_nash_t_prev = self.saved_states['S_nash_t']
-        K_nash = self.K_nash
-        q_lf_t = self.q_lf_t
-        q_bucket_t = self.q_bucket_t
-        for i, S_nash_t_i in enumerate(S_nash_t):
-            S_nash_t_prev_i = S_nash_t_prev[i]
-            q_nash_out = np.maximum(K_nash[i] * S_nash_t_i, 0.)
-            q_nash_in = q_nash_out.copy()
-            q_nash_in[1:] = q_nash_out[:-1]
-            q_nash_in[0] = q_lf_t[i]
-            q_bucket_t[i] = q_nash_out[-1]
-            S_nash_t_i[:] = S_nash_t_prev_i + (q_nash_in - q_nash_out) * dt
-        self.q_bucket_t = q_bucket_t
-
-    def calculate_nash_cascade__trapezoidal(self):
-        dt = self.dt
-        S_nash_t = self.S_nash_t
-        S_nash_t_prev = self.saved_states['S_nash_t']
-        q_lf_t = self.q_lf_t
-        q_lf_t_prev = self.saved_states['q_lf_t']
-        q_bucket_t = self.q_bucket_t
-        K_nash = self.K_nash
-        for i, S_nash_t_i in enumerate(S_nash_t):
-            S_nash_t_prev_i = S_nash_t_prev[i]
-            q_nash_out = np.maximum(K_nash[i] * S_nash_t_i, 0.)
-            q_nash_in = q_nash_out.copy()
-            q_nash_in[1:] = q_nash_out[:-1]
-            q_nash_in[0] = q_lf_t[i]
-            q_nash_out_prev = np.maximum(K_nash[i] * S_nash_t_prev_i, 0.)
-            q_nash_in_prev = q_nash_out_prev.copy()
-            q_nash_in_prev[1:] = q_nash_out_prev[:-1]
-            q_nash_in_prev[0] = q_lf_t_prev[i]
-            f_next = q_nash_in - q_nash_out
-            f_prev = q_nash_in_prev - q_nash_out_prev
-            S_nash_t_i[:] = S_nash_t_prev_i + dt / 2 * (f_next + f_prev)
-            q_bucket_t[i] = (q_nash_out[-1] + q_nash_out_prev[-1]) / 2
         self.q_bucket_t = q_bucket_t
 
     def calculate_nash_cascade__lsim(self):
@@ -645,7 +616,8 @@ class GroundwaterLayer():
         f_prev = q_perc_t_prev - q_gw_t_prev
         f_next = q_perc_t - q_gw_t
         S_gw_t_next = S_gw_t_prev + dt / 2 * (f_prev + f_next)
-        self.S_gw_t = S_gw_t_next
+        return S_gw_t_next
+        #self.S_gw_t = S_gw_t_next
 
     def save_state(self):
         self.saved_states['datetime'] = self.datetime
