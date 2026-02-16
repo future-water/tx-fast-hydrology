@@ -3,7 +3,7 @@ import math
 import uuid
 import numpy as np
 import pandas as pd
-from numba import njit
+from numba import njit, prange
 from scipy.integrate import odeint
 from scipy.signal import lsim
 import copy
@@ -85,18 +85,23 @@ class CFEModel():
             else:
                 break
 
-        # Compute nash cascade
-        #self.soil_layer.calculate_soil_nash_cascade__lsim()
-        self.soil_layer.calculate_bucket_flow__nash(self.soil_layer.q_bucket_t, 
-                                                    self.soil_layer.q_lf_t, 
-                                                    self.soil_layer.saved_states['q_lf_t'])
-        # Compute runoff by convolution with GIUH
-        self.surface_layer.calculate_surface_runoff__nash(self.surface_layer.q_overflow_t, 
-                                                          self.surface_layer.q_surf_t, 
-                                                          self.surface_layer.saved_states['q_surf_t'])
-        #self.surface_layer.calculate_surface_runoff__giuh()
+        # Turn off overland flow and interflow routing for now
+        if False:
+            # Compute nash cascade
+            #self.soil_layer.calculate_soil_nash_cascade__lsim()
+            self.soil_layer.calculate_bucket_flow__nash(self.soil_layer.q_bucket_t, 
+                                                        self.soil_layer.q_lf_t, 
+                                                        self.soil_layer.saved_states['q_lf_t'])
+            # Compute runoff by convolution with GIUH
+            self.surface_layer.calculate_surface_runoff__nash(self.surface_layer.q_overflow_t, 
+                                                            self.surface_layer.q_surf_t, 
+                                                            self.surface_layer.saved_states['q_surf_t'])
+            #self.surface_layer.calculate_surface_runoff__giuh()
         # Update timestamp
         self.datetime = self.datetime + self.timedelta
+        assert np.isfinite(soil_layer.S_t).all()
+        assert np.isfinite(surface_layer.S_surf_t).all()
+        assert np.isfinite(groundwater_layer.S_gw_t).all()
 
     def save_state(self):
         self.surface_layer.save_state()
@@ -370,7 +375,7 @@ class SoilLayer():
 
         # Schaake partitioning
         self.refkdt = 3.0
-        self.satdk_ref = 2e-6
+        self.satdk_ref = 2e-6 # Araki paper says this should be m/h, but seems incorrect
         self.schaake_constant = self.refkdt * self.satdk / self.satdk_ref
 
         # TODO: Check this
@@ -709,46 +714,49 @@ def calculate_nash_cascade__lsim(layer, q_outflow_t, q_inflow_t, q_inflow_t_prev
         q_outflow_t[i] = y[-1]
     return S_nash_t, q_outflow_t
 
-@njit
-def compute_et_from_soil(S_t, S_thresh, S_wilt, pet_t):
-    n = len(S_t)
-    et_soil_t = np.zeros(n, dtype=np.float64)
-    for i in range(n):
-        if (S_t[i] >= S_thresh[i]):
-            et_soil_t[i] = pet_t[i]
-        elif (S_t[i] > S_wilt[i]) & (S_t[i] < S_thresh[i]):
-            et_soil_t[i] = pet_t[i] * (S_t[i] - S_wilt[i]) / (S_thresh[i] - S_wilt[i])
-        elif (S_t[i] <= S_wilt[i]):
-            et_soil_t[i] = 0.
-        else:
-            raise ValueError('Check values of S_wilt and S_thresh')
-    return et_soil_t
+#@njit(parallel=True)
+#def _compute_et_from_soil(S_t, S_thresh, S_wilt, pet_t):
+#    n = len(S_t)
+#    et_soil_t = np.zeros(n, dtype=np.float64)
+#    for i in prange(n):
+#        if (S_t[i] >= S_thresh[i]):
+#            et_soil_t[i] = pet_t[i]
+#        elif (S_t[i] > S_wilt[i]) & (S_t[i] < S_thresh[i]):
+#            et_soil_t[i] = pet_t[i] * (S_t[i] - S_wilt[i]) / (S_thresh[i] - S_wilt[i])
+#        elif (S_t[i] <= S_wilt[i]):
+#            et_soil_t[i] = 0.
+#        else:
+#            print('Error')
+#            #raise ValueError('Check values of S_wilt and S_thresh')
+#    return et_soil_t
 
-@njit
-def compute_lateral_flow_in_soil(S_t, S_thresh, S_max, K_lf):
-    n = len(S_t)
-    q_lf_t = np.zeros(n, dtype=np.float64)
-    for i in range(n):
-        if (S_t[i] >= S_thresh[i]):
-            q_lf_t[i] = K_lf[i] * (S_t[i] - S_thresh[i]) / (S_max[i] - S_thresh[i])
-        elif (S_t[i] < S_thresh[i]):
-            q_lf_t[i] = 0.
-        else:
-            raise ValueError('Check values of S_t and S_thresh')
-    return q_lf_t
+#@njit(parallel=True)
+#def _compute_lateral_flow_in_soil(S_t, S_thresh, S_max, K_lf):
+#    n = len(S_t)
+#    q_lf_t = np.zeros(n, dtype=np.float64)
+#    for i in prange(n):
+#        if (S_t[i] >= S_thresh[i]):
+#            q_lf_t[i] = K_lf[i] * (S_t[i] - S_thresh[i]) / (S_max[i] - S_thresh[i])
+#        elif (S_t[i] < S_thresh[i]):
+#            q_lf_t[i] = 0.
+#        else:
+#            print('Error')
+#            #raise ValueError('Check values of S_t and S_thresh')
+#    return q_lf_t
 
-@njit
-def compute_percolation_from_soil(S_t, S_thresh, S_max, K_perc):
-    n = len(S_t)
-    q_perc_t = np.zeros(n, dtype=np.float64)
-    for i in range(n):
-        if (S_t[i] >= S_thresh[i]):
-            q_perc_t[i] = K_perc[i] * (S_t[i] - S_thresh[i]) / (S_max[i] - S_thresh[i])
-        elif (S_t[i] < S_thresh[i]):
-            q_perc_t[i] = 0.
-        else:
-            raise ValueError('Check values of S_t and S_thresh')
-    return q_perc_t
+#@njit(parallel=True)
+#def _compute_percolation_from_soil(S_t, S_thresh, S_max, K_perc):
+#    n = len(S_t)
+#    q_perc_t = np.zeros(n, dtype=np.float64)
+#    for i in prange(n):
+#        if (S_t[i] >= S_thresh[i]):
+#            q_perc_t[i] = K_perc[i] * (S_t[i] - S_thresh[i]) / (S_max[i] - S_thresh[i])
+#        elif (S_t[i] < S_thresh[i]):
+#            q_perc_t[i] = 0.
+#        else:
+#            print('Error')
+#            #raise ValueError('Check values of S_t and S_thresh')
+#    return q_perc_t
 
 @njit
 def compute_infiltration_rate__schaake(S_t, p_t, S_max, schaake_constant):
@@ -762,4 +770,29 @@ def compute_infiltration_rate__schaake(S_t, p_t, S_max, schaake_constant):
             I_c_t = S_deficit * (1 - math.exp(schaake_constant[i]))
             I_t[i] = min(p_t[i] * I_c_t / (p_t[i] + I_c_t), p_t[i])
     return I_t
-        
+
+# Differentiable versions
+
+def sigmoid(x, loc=0, scale=1):
+    return 1 / (1 + np.exp(-(x - loc) / scale))
+
+def softplus(x, loc=0., scale=1., a=10.):
+    return np.log(1 + np.exp(a * scale * (x - loc))) / a
+
+def compute_et_from_soil(S_t, S_thresh, S_wilt, pet_t):
+    loc = (S_thresh + S_wilt) / 2
+    scale = (S_thresh - S_wilt) / 4
+    et_soil_t = pet_t * sigmoid(S_t, loc=loc, scale=scale)
+    return et_soil_t
+
+def compute_lateral_flow_in_soil(S_t, S_thresh, S_max, K_lf):
+    loc = S_thresh
+    scale = 1 / (S_max - S_thresh)
+    q_lf_t = K_lf * softplus(S_t, loc=loc, scale=scale)
+    return q_lf_t
+
+def compute_percolation_from_soil(S_t, S_thresh, S_max, K_perc):
+    loc = S_thresh
+    scale = 1 / (S_max - S_thresh)
+    q_perc_t = K_perc * softplus(S_t, loc=loc, scale=scale)
+    return q_perc_t
