@@ -4,7 +4,6 @@ import uuid
 import numpy as np
 import pandas as pd
 from numba import njit, prange
-from scipy.integrate import odeint
 from scipy.signal import lsim
 import copy
 from heapq import heappop, heappush
@@ -32,7 +31,7 @@ class CFEModel():
         surface_layer = self.surface_layer
         soil_layer = self.soil_layer
         groundwater_layer = self.groundwater_layer
-        S_surf_t_prev = surface_layer.S_surf_t.copy()
+        #S_surf_t_prev = surface_layer.S_surf_t.copy()
         S_t_prev = soil_layer.S_t.copy()
         S_gw_t_prev = groundwater_layer.S_gw_t.copy()
         self.iter_elapsed = 0
@@ -46,14 +45,14 @@ class CFEModel():
             soil_layer.calculate_lateral_flow_in_soil()
             soil_layer.calculate_percolation_from_soil()
             # Surface water reservoir
-            surface_layer.calculate_surface_runoff_rate()
+            surface_layer.calculate_surface_runoff_rate(p_t)
             # Groundwater model
             groundwater_layer.calculate_saturation_excess_overland_flow_from_gw()
             groundwater_layer.compute_groundwater_flux__exponential()  
 
             # Calculate water storages
             # Surface ponding
-            S_surf_t_next = surface_layer.calculate_surface_storage__trapezoidal(dt, p_t)
+            #S_surf_t_next = surface_layer.calculate_surface_storage__trapezoidal(dt, p_t)
             # Soil moisture reservoir
             S_t_next = soil_layer.calculate_soil_storage__trapezoidal(dt)
             # Groundwater storage
@@ -66,20 +65,20 @@ class CFEModel():
             #binding_ratio = min(surf_ratio.min(), soil_ratio.min(), gw_ratio.min())
             #learning_rate = max(min(binding_ratio, max_learning_rate), min_learning_rate)
             learning_rate = 0.25
-            self.surface_layer.S_surf_t = (1 - learning_rate) * S_surf_t_prev + (learning_rate) * S_surf_t_next
+            #self.surface_layer.S_surf_t = (1 - learning_rate) * S_surf_t_prev + (learning_rate) * S_surf_t_next
             self.soil_layer.S_t = (1 - learning_rate) * S_t_prev + (learning_rate) * S_t_next
             self.groundwater_layer.S_gw_t = (1 - learning_rate) * S_gw_t_prev + (learning_rate) * S_gw_t_next
 
             # Continue iterating until convergence
             self.iter_elapsed += 1
-            surf_rel_err = S_surf_t_next - S_surf_t_prev
+            #surf_rel_err = S_surf_t_next - S_surf_t_prev
             soil_rel_err = S_t_next - S_t_prev
             gw_rel_err = S_gw_t_next - S_gw_t_prev
-            max_rel_err = max(np.abs(surf_rel_err).max(),
-                              np.abs(soil_rel_err).max(),
+            #max_rel_err = max(np.abs(surf_rel_err).max(),
+            max_rel_err = max(np.abs(soil_rel_err).max(),
                               np.abs(gw_rel_err).max())
             if max_rel_err > eps:
-                S_surf_t_prev = surface_layer.S_surf_t.copy()
+                #S_surf_t_prev = surface_layer.S_surf_t.copy()
                 S_t_prev = soil_layer.S_t.copy()
                 S_gw_t_prev = groundwater_layer.S_gw_t.copy()
             else:
@@ -99,8 +98,8 @@ class CFEModel():
             #self.surface_layer.calculate_surface_runoff__giuh()
         # Update timestamp
         self.datetime = self.datetime + self.timedelta
+        #assert np.isfinite(surface_layer.S_surf_t).all()
         assert np.isfinite(soil_layer.S_t).all()
-        assert np.isfinite(surface_layer.S_surf_t).all()
         assert np.isfinite(groundwater_layer.S_gw_t).all()
 
     def save_state(self):
@@ -208,15 +207,18 @@ class SurfaceLayer():
         self.S_surf_t = self.saved_states['S_surf_t']
         self.S_nash_t = self.saved_states['S_nash_t']
 
-    def calculate_surface_runoff_rate(self):
-        S_surf_t = self.S_surf_t
-        n = self.mannings_n
-        S_o = self.surf_slope
-        B = self.watershed_width
-        surf_area = self.parent.catchment_area_m2
-        h_t = np.maximum(S_surf_t, 0.)
-        q_surf_t = (1 / n) * h_t**(5/3) * B * np.sqrt(S_o) / surf_area
+    def calculate_surface_runoff_rate(self, p_t):
+        I_t = self.parent.soil_layer.I_t
+        q_surf_t = np.maximum(p_t - I_t, 0.)
         self.q_surf_t = q_surf_t
+        #S_surf_t = self.S_surf_t
+        #n = self.mannings_n
+        #S_o = self.surf_slope
+        #B = self.watershed_width
+        #surf_area = self.parent.catchment_area_m2
+        #h_t = np.maximum(S_surf_t, 0.)
+        #q_surf_t = (1 / n) * h_t**(5/3) * B * np.sqrt(S_o) / surf_area
+        #self.q_surf_t = q_surf_t
 
     def calculate_surface_storage__explicit(self, dt, p_t):
         if dt is None:
@@ -758,18 +760,18 @@ def calculate_nash_cascade__lsim(layer, q_outflow_t, q_inflow_t, q_inflow_t_prev
 #            #raise ValueError('Check values of S_t and S_thresh')
 #    return q_perc_t
 
-@njit
-def compute_infiltration_rate__schaake(S_t, p_t, S_max, schaake_constant):
-    n = len(S_t)
-    I_t = np.zeros(n, dtype=np.float64)
-    for i in range(n):
-        S_deficit = S_max[i] - S_t[i]
-        if S_deficit < 0:
-            I_t[i] = 0.
-        else:
-            I_c_t = S_deficit * (1 - math.exp(schaake_constant[i]))
-            I_t[i] = min(p_t[i] * I_c_t / (p_t[i] + I_c_t), p_t[i])
-    return I_t
+#@njit
+#def compute_infiltration_rate__schaake(S_t, p_t, S_max, schaake_constant):
+#    n = len(S_t)
+#    I_t = np.zeros(n, dtype=np.float64)
+#    for i in range(n):
+#        S_deficit = S_max[i] - S_t[i]
+#        if S_deficit < 0:
+#            I_t[i] = 0.
+#        else:
+#            I_c_t = S_deficit * (1 - math.exp(schaake_constant[i]))
+#            I_t[i] = min(p_t[i] * I_c_t / (p_t[i] + I_c_t), p_t[i])
+#    return I_t
 
 # Differentiable versions
 
@@ -778,6 +780,11 @@ def sigmoid(x, loc=0, scale=1):
 
 def softplus(x, loc=0., scale=1., a=10.):
     return np.log(1 + np.exp(a * scale * (x - loc))) / a
+
+def smoothmax(x1, x2, a=10.):
+    num = x1 * np.exp(a * x1) + x2 * np.exp(a * x2)
+    den = np.exp(a * x1) + np.exp(a * x2)
+    return num / den
 
 def compute_et_from_soil(S_t, S_thresh, S_wilt, pet_t):
     loc = (S_thresh + S_wilt) / 2
@@ -796,3 +803,12 @@ def compute_percolation_from_soil(S_t, S_thresh, S_max, K_perc):
     scale = 1 / (S_max - S_thresh)
     q_perc_t = K_perc * softplus(S_t, loc=loc, scale=scale)
     return q_perc_t
+
+def compute_infiltration_rate__schaake(S_t, p_t, S_max, schaake_constant):
+    loc = 0.
+    scale = 1 / 100
+    S_deficit = S_max - S_t
+    I_c_t = S_deficit * (1 - np.exp(schaake_constant))
+    I_t_max = smoothmax(p_t * I_c_t / (p_t + I_c_t), p_t, a=-10.)
+    I_t = I_t_max * sigmoid(S_deficit, loc=loc, scale=scale)
+    return I_t
