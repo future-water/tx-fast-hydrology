@@ -713,6 +713,197 @@ class Muskingum:
         model_collection = ModelCollection(models, name=name)
         return model_collection
 
+class Reservoir():
+    def __init__(self, data, load_optional=False):
+        self.callbacks = {}
+        self.saved_states = {}
+        self.sinks = []
+        self.sources = []
+        # Read json input file
+        if isinstance(data, dict):
+            self.load_model(data, load_optional=load_optional)
+        elif isinstance(data, str):
+            self.load_model_file(data, load_optional=load_optional)
+        else:
+            raise TypeError('`data` must be a file path or dictionary.')
+        # Create logger
+        self.logger = logging.getLogger(self.name)
+
+        self.i_t_next = np.zeros(self.n, dtype=np.float64)
+        self.i_t_prev = np.zeros(self.n, dtype=np.float64)
+        self.o_t_next = np.zeros(self.n, dtype=np.float64)
+        self.o_t_prev = np.zeros(self.n, dtype=np.float64)
+        self.h_t_next = np.zeros(1, dtype=np.float64)
+        self.h_t_prev = np.zeros(1, dtype=np.float64)
+
+        self.save_state()
+
+    @property
+    def dt(self):
+        dt = float(self.timedelta.seconds)
+        return dt
+
+    def load_model(self, obj, load_optional=True):
+        required_fields = {'name', 'datetime', 'timedelta', 'reservoir_id', 'outlet_index',
+                           'A_s', 'C_w', 'L', 'h_max', 'h_w', 'h_o', 'C_o', 'O_a', 'h_t', 'o_t'}
+        optional_fields = {}
+        defaults = {'name' : str(uuid.uuid4()), 
+                    'datetime' : DEFAULT_START_TIME,
+                    'timedelta' : DEFAULT_TIMEDELTA,
+                    'dx' : None,
+                    'paths' : []}
+        # Validate data
+        try:
+            assert required_fields.issubset(set(obj.keys()))
+        except:
+            raise ValueError(f'Model field must contain fields {required_fields}')
+        try:
+            assert isinstance(obj['A_s'], np.ndarray)
+            assert isinstance(obj['C_w'], np.ndarray)
+            assert isinstance(obj['L'], np.ndarray)
+            assert isinstance(obj['h_max'], np.ndarray)
+            assert isinstance(obj['h_w'], np.ndarray)
+            assert isinstance(obj['h_o'], np.ndarray)
+            assert isinstance(obj['C_o'], np.ndarray)
+            assert isinstance(obj['O_a'], np.ndarray)
+            assert isinstance(obj['h_t'], np.ndarray)
+            assert isinstance(obj['i_t'], np.ndarray)
+            assert isinstance(obj['o_t'], np.ndarray)
+            assert obj['A_s'].dtype == np.float64
+            assert obj['C_w'].dtype == np.float64
+            assert obj['L'].dtype == np.float64
+            assert obj['h_max'].dtype == np.float64
+            assert obj['h_w'].dtype == np.float64
+            assert obj['h_o'].dtype == np.float64
+            assert obj['C_o'].dtype == np.float64
+            assert obj['O_a'].dtype == np.float64
+            assert obj['h_t'].dtype == np.float64
+            assert obj['i_t'].dtype == np.float64
+            assert obj['o_t'].dtype == np.float64
+        except:
+            raise TypeError('Typing of input arrays is incorrect.')
+        try:
+            assert (obj['C_w'].size == obj['L'].size == obj['h_max'].size 
+                    == obj['h_w'].size == obj['h_o'].size == obj['C_o'].size 
+                    == obj['O_a'].size == obj['h_t'].size)
+        except:
+            raise ValueError('Arrays are not the same length')
+        # If optional fields are desired, add to the set of fields
+        if load_optional:
+            fields = required_fields.union(optional_fields)
+        else:
+            fields = required_fields
+        # Iterate through fields and add as attributes to class instance
+        for field in fields:
+            if field in defaults:
+                default_value = defaults[field]
+                value = obj.setdefault(field, default_value)
+            else:
+                value = obj[field]
+            setattr(self, field, value)
+        self.n = obj['o_t'].size
+
+    def load_model_file(self, file_path, load_optional=True):
+        obj = load_model_file(file_path, load_optional=load_optional)
+        self.load_model(obj)
+
+    def Q_w(self, h):
+        C_w = self.C_w
+        L = self.L
+        h_w = self.h_w
+        h_o = self.h_o
+        return C_w * L * np.maximum(h - (h_w - h_o), 0.)**(3/2)
+    
+    def Q_o(self, h):
+        C_o = self.C_o
+        O_a = self.O_a
+        g = 9.81
+        return C_o * O_a * np.sqrt(2 * g * np.maximum(h, 0.))
+    
+    def step(self, p_t_next, timedelta=None):
+        return self.step_iter(p_t_next, timedelta=timedelta)
+
+    def step_iter(self, p_t_next, timedelta=None):
+        if timedelta is None:
+            timedelta = self.timedelta
+            dt = self.dt
+        else:
+            dt = float(timedelta.seconds)
+        A_s = self.A_s
+        i_t_prev = self.i_t_next
+        o_t_prev = self.o_t_next
+        h_t_prev = self.h_t_next
+        q_w_t = self.Q_w(h_t_prev)
+        q_o_t = self.Q_o(h_t_prev)
+        outlet_index = self.outlet_index
+        i_t_prev_sum = i_t_prev.sum()
+        p_t_next_sum = p_t_next.sum()
+        h_t_next = h_t_prev + (dt / A_s) * (p_t_next_sum + i_t_prev_sum - q_o_t - q_w_t)
+        o_t_out_next = q_w_t + q_o_t
+        o_t_next = np.zeros(self.n)
+        o_t_next[outlet_index] = o_t_out_next
+        self.h_t_next = h_t_next
+        self.o_t_next = o_t_next
+        self.h_t_prev = h_t_prev
+        self.o_t_prev = o_t_prev
+        self.datetime += timedelta
+        for _, callback in self.callbacks.items():
+            callback.__on_step_end__()
+        self.logger.debug(f'Stepped to time {self.datetime}')
+
+    def simulate_iter(self, dataframe, start_time=None, end_time=None, o_t_init=None, **kwargs):
+        assert isinstance(dataframe.index, pd.core.indexes.datetimes.DatetimeIndex)
+        assert (dataframe.index.tz == datetime.timezone.utc)
+        assert np.in1d(self.reach_ids, dataframe.columns).all()
+        # Set start and end times
+        # TODO: Put in checks here
+        if end_time is None:
+            end_time = dataframe.index.max()
+        else:
+            try:
+                assert isinstance(end_time, pd.Timestamp)
+            except:
+                raise TypeError('`end_time` must be of type `pd.Timestamp`')
+        if start_time is None:
+            start_time = self.datetime
+        else:
+            self.datetime = start_time
+            try:
+                assert o_t_init is not None
+            except:
+                ValueError('If `start_time` is specified, initial state `o_t_init` must be provided.')
+        if o_t_init is not None:
+            self.init_states(o_t_next=o_t_init)
+        # Execute pre-simulation callbacks
+        for _, callback in self.callbacks.items():
+            callback.__on_simulation_start__()
+        # Crop input data to model reaches
+        dataframe = dataframe[self.reach_ids]
+        while self.datetime < end_time:
+            next_timestep = self.datetime + self.timedelta
+            p_t_next = interpolate_sample(float(next_timestep.value), 
+                                          dataframe.index.astype(int).astype(float).values,
+                                          dataframe.values) 
+            self.step_iter(p_t_next, **kwargs)
+            yield self
+        # Execute post-simulation callbacks
+        for _, callback in self.callbacks.items():
+            callback.__on_simulation_end__()
+
+    def save_state(self):
+        self.logger.info(f'Saving state for model {self.name} at time {self.datetime}...')
+        self.saved_states["datetime"] = self.datetime
+        # TODO: Don't need to store `i_t_next`
+        self.saved_states["i_t_next"] = self.i_t_next.copy()
+        self.saved_states["h_t_next"] = self.h_t_next.copy()
+        self.saved_states["o_t_next"] = self.o_t_next.copy()
+        for _, callback in self.callbacks.items():
+            callback.__on_save_state__()
+
+    def init_states(self, o_t_next=None, i_t_next=None, h_t_next=None):
+        # TODO: Initialize only h_t
+        pass
+
 class Connection():
     def __init__(self, upstream_model, downstream_model, 
                  upstream_index, downstream_index, name=None):

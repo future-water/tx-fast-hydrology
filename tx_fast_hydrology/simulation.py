@@ -7,6 +7,7 @@ import json
 import numpy as np
 import pandas as pd
 from tx_fast_hydrology.callbacks import BaseCallback
+from tx_fast_hydrology.muskingum import Muskingum, Reservoir
 
 logger = logging.getLogger(__name__)
 
@@ -145,6 +146,7 @@ class AsyncSimulation(Simulation):
             downstream_model = connection.downstream_model
             endnode = downstream_model.name
             if startnode != endnode:
+                print(upstream_model.name, '->', downstream_model.name)
                 #model_end = self.models[endnode]
                 inputs = self.inputs[endnode]
                 upstream_index = connection.upstream_index
@@ -154,11 +156,14 @@ class AsyncSimulation(Simulation):
                 # TODO: This seems fragile
                 i_t_prev = outputs[reach_id_out].shift(1).iloc[1:].fillna(0.)
                 i_t_next = outputs[reach_id_out].iloc[1:]
-                gamma_in = downstream_model.gamma[downstream_index]
-                alpha_in = downstream_model.alpha[downstream_index]
-                beta_in = downstream_model.beta[downstream_index]
-                inputs.loc[:, reach_id_in] += (alpha_in * i_t_next.values / gamma_in
-                                            + beta_in * i_t_prev.values / gamma_in)
+                if isinstance(downstream_model, Muskingum):
+                    gamma_in = downstream_model.gamma[downstream_index]
+                    alpha_in = downstream_model.alpha[downstream_index]
+                    beta_in = downstream_model.beta[downstream_index]
+                    inputs.loc[:, reach_id_in] += (alpha_in * i_t_next.values / gamma_in
+                                                + beta_in * i_t_prev.values / gamma_in)
+                elif isinstance(downstream_model, Reservoir):
+                    inputs.loc[:, reach_id_in] += i_t_next
                 indegree[endnode] -= 1
                 if (indegree[endnode] == 0):
                     taskgroup.create_task(self._simulate(taskgroup, downstream_model,
