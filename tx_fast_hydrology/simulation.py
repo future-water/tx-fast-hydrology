@@ -146,7 +146,7 @@ class AsyncSimulation(Simulation):
             downstream_model = connection.downstream_model
             endnode = downstream_model.name
             if startnode != endnode:
-                print(upstream_model.name, '->', downstream_model.name)
+                logger.debug(f'{upstream_model.name} -> {downstream_model.name}')
                 #model_end = self.models[endnode]
                 inputs = self.inputs[endnode]
                 upstream_index = connection.upstream_index
