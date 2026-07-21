@@ -11,9 +11,7 @@ from heapq import heappop, heappush
 DEFAULT_START_TIME = pd.to_datetime(0., utc=True)
 DEFAULT_TIMEDELTA = pd.to_timedelta(3600, unit='s')
 
-# Adapted from cfe_py code at: https://github.com/NWC-CUAHSI-Summer-Institute/cfe_py
-
-class CFEModel():
+class GreenAmpt():
     def __init__(self, data):
         self.load_model(data)
         self.N = len(self.watershed_ids)
@@ -42,12 +40,12 @@ class CFEModel():
             soil_layer.calculate_evaporation_from_soil(pet_t)
             # Infiltration partitioning
             soil_layer.calculate_infiltration_rate(p_t)
-            soil_layer.calculate_lateral_flow_in_soil()
+            #TEMP#soil_layer.calculate_lateral_flow_in_soil()
             soil_layer.calculate_percolation_from_soil()
             # Surface water reservoir
             surface_layer.calculate_surface_runoff_rate(p_t)
             # Groundwater model
-            groundwater_layer.calculate_saturation_excess_overland_flow_from_gw()
+            #TEMP#groundwater_layer.calculate_saturation_excess_overland_flow_from_gw()
             groundwater_layer.compute_groundwater_flux__exponential()  
 
             # Calculate water storages
@@ -335,50 +333,20 @@ class SoilLayer():
         self.parent = parent
         self.load_model(data)
 
-        # Initialize simulation constants
-        atm_press_Pa = 101325.
-        unit_weight_water_N_per_m3 = 9810.
-
-        # Local values to be used in setting up soil reservoir
+        #self.S_wilt = self.smcwlt * self.D
+        #self.S_max = self.smcmax * self.D
         # TODO: Arbitrary initialization
-        trigger_z_m = 0.5
-        field_capacity_atm_press_fraction = self.alpha_fc
+        self.S_t = 1e-5 * np.ones(self.parent.N, dtype=np.float64)
+        self.S_thresh = self.D
 
-        # Soil reservoir configuration
-        # Soil outflux calculation, Equation 3 in Fred Ogden's document
-        H_water_table_m = (field_capacity_atm_press_fraction * atm_press_Pa 
-                           / unit_weight_water_N_per_m3)
-
-        soil_water_content_at_field_capacity = self.smcmax * np.power(
-            H_water_table_m / self.satpsi, (1. / self.bb)
-        )
-
-        Omega = H_water_table_m - trigger_z_m
-        # Upper & lower limit of the integral in Equation 4 in Fred Ogden's document
-        lower_lim = np.power(Omega, (1. - 1. / self.bb)) / (1. - 1. / self.bb)
-        upper_lim = np.power(Omega + self.D, (1. - 1. / self.bb)) / (1. - 1. / self.bb)
-        # Integral & power term in Equation 4 & 5 in Fred Ogden's document
-        storage_thresh_pow_term = np.power(1. / self.satpsi, (-1. / self.bb))
-        lim_diff = upper_lim - lower_lim
-        field_capacity_storage_threshold_m = (
-            self.smcmax * storage_thresh_pow_term * lim_diff
-        )
-
-        self.S_thresh = field_capacity_storage_threshold_m
-        self.S_wilt = self.smcwlt * self.D
-        self.S_max = self.smcmax * self.D
-        # TODO: Arbitrary initialization
-        self.S_t = self.S_max * 2 / 3
+        self.K_h_sat = self.satdk
+        self.d_theta = self.smcmax - self.smcwlt
+        self.psi_f = np.abs(self.psi_ae) * (2 * self.bb + 3) / (2 * self.bb + 6)
 
         self.I_t = np.zeros(self.parent.N, dtype=np.float64)
         self.et_soil_t = np.zeros(self.parent.N, dtype=np.float64)
         self.q_lf_t = np.zeros(self.parent.N, dtype=np.float64)
         self.q_perc_t = np.zeros(self.parent.N, dtype=np.float64)
-
-        # Schaake partitioning
-        self.refkdt = 3.0
-        self.satdk_ref = 2e-6 # Araki paper says this should be m/h, but seems incorrect
-        self.schaake_constant = self.refkdt * self.satdk / self.satdk_ref
 
         # TODO: Check this
         self.K_perc = self.satdk * self.slop
@@ -446,8 +414,7 @@ class SoilLayer():
     def calculate_evaporation_from_soil(self, pet_t):
         S_t = self.S_t
         S_thresh = self.S_thresh
-        S_wilt = self.S_wilt
-        et_soil_t = compute_et_from_soil(S_t, S_thresh, S_wilt, pet_t)
+        et_soil_t = compute_et_from_soil(S_t, S_thresh, pet_t)
         self.et_soil_t = et_soil_t
 
     def calculate_lateral_flow_in_soil(self):
@@ -460,17 +427,16 @@ class SoilLayer():
 
     def calculate_percolation_from_soil(self):
         S_t = self.S_t
-        S_thresh = self.S_thresh
-        S_max = self.S_max
         K_perc = self.K_perc
-        q_perc_t = compute_percolation_from_soil(S_t, S_thresh, S_max, K_perc)
+        q_perc_t = compute_percolation_from_soil(S_t, K_perc)
         self.q_perc_t = q_perc_t
 
     def calculate_infiltration_rate(self, p_t):
         S_t = self.S_t
-        S_max = self.S_max
-        schaake_constant = self.schaake_constant
-        I_t = compute_infiltration_rate__schaake(S_t, p_t, S_max, schaake_constant)
+        K_h_sat = self.K_h_sat
+        psi_f = self.psi_f
+        d_theta = self.d_theta
+        I_t = compute_infiltration_rate__greenampt(S_t, p_t, K_h_sat, psi_f, d_theta)
         self.I_t = I_t
 
     def calculate_soil_storage__explicit(self, dt):
@@ -527,7 +493,7 @@ class SoilLayer():
         self.q_bucket_t = q_bucket_t
 
     def load_model(self, obj, load_optional=True):
-        required_fields = {'alpha_fc', 'bb', 'D', 'satdk', 'satpsi', 'slop', 
+        required_fields = {'psi_ae', 'alpha_fc', 'bb', 'D', 'satdk', 'satpsi', 'slop', 
                            'smcmax', 'smcwlt', 'K_lf', 'giuh_values', 'giuh_timedeltas', 
                            'K_nash', 'num_nash_cascades'}
         optional_fields = set()
@@ -539,6 +505,7 @@ class SoilLayer():
             raise ValueError(f'Model field must contain fields {required_fields}')
         try:
             # TODO: This can be condensed
+            assert isinstance(obj['psi_ae'], np.ndarray)
             assert isinstance(obj['alpha_fc'], np.ndarray)
             assert isinstance(obj['bb'], np.ndarray)
             assert isinstance(obj['D'], np.ndarray)
@@ -550,6 +517,7 @@ class SoilLayer():
             assert isinstance(obj['K_lf'], np.ndarray)
             assert isinstance(obj['K_nash'], np.ndarray)
             assert isinstance(obj['num_nash_cascades'], np.ndarray)
+            assert obj['psi_ae'].dtype == np.float64
             assert obj['alpha_fc'].dtype == np.float64
             assert obj['bb'].dtype == np.float64
             assert obj['D'].dtype == np.float64
@@ -565,10 +533,10 @@ class SoilLayer():
             raise TypeError('Typing of input arrays is incorrect.')
         try:
             # TODO: This too
-            assert (obj['bb'].size == obj['D'].size == obj['satdk'].size ==
-                    obj['satpsi'].size == obj['slop'].size == obj['smcmax'].size ==
-                    obj['smcwlt'].size == obj['K_lf'].size == obj['K_nash'].size ==
-                    obj['num_nash_cascades'].size)
+            assert (obj['psi_ae'].size == obj['alpha_fc'].size == obj['bb'].size == 
+                    obj['D'].size == obj['satdk'].size == obj['satpsi'].size == 
+                    obj['slop'].size == obj['smcmax'].size == obj['smcwlt'].size == 
+                    obj['K_lf'].size == obj['K_nash'].size == obj['num_nash_cascades'].size)
         except:
             raise ValueError('Arrays are not the same length')
         # If optional fields are desired, add to the set of fields
@@ -716,21 +684,20 @@ def calculate_nash_cascade__lsim(layer, q_outflow_t, q_inflow_t, q_inflow_t_prev
         q_outflow_t[i] = y[-1]
     return S_nash_t, q_outflow_t
 
-#@njit(parallel=True)
-#def _compute_et_from_soil(S_t, S_thresh, S_wilt, pet_t):
-#    n = len(S_t)
-#    et_soil_t = np.zeros(n, dtype=np.float64)
-#    for i in prange(n):
-#        if (S_t[i] >= S_thresh[i]):
-#            et_soil_t[i] = pet_t[i]
-#        elif (S_t[i] > S_wilt[i]) & (S_t[i] < S_thresh[i]):
-#            et_soil_t[i] = pet_t[i] * (S_t[i] - S_wilt[i]) / (S_thresh[i] - S_wilt[i])
-#        elif (S_t[i] <= S_wilt[i]):
-#            et_soil_t[i] = 0.
-#        else:
-#            print('Error')
-#            #raise ValueError('Check values of S_wilt and S_thresh')
-#    return et_soil_t
+@njit
+def compute_et_from_soil(S_t, S_thresh, pet_t):
+    n = len(S_t)
+    et_soil_t = np.zeros(n, dtype=np.float64)
+    for i in range(n):
+        if (S_t[i] >= S_thresh[i]):
+            et_soil_t[i] = pet_t[i]
+        elif (S_t[i] > 0.) & (S_t[i] < S_thresh[i]):
+            et_soil_t[i] = pet_t[i] * S_t[i] / S_thresh[i]
+        elif (S_t[i] <= 0.):
+            et_soil_t[i] = 0.
+        else:
+            print('Error')
+    return et_soil_t
 
 #@njit(parallel=True)
 #def _compute_lateral_flow_in_soil(S_t, S_thresh, S_max, K_lf):
@@ -746,32 +713,22 @@ def calculate_nash_cascade__lsim(layer, q_outflow_t, q_inflow_t, q_inflow_t_prev
 #            #raise ValueError('Check values of S_t and S_thresh')
 #    return q_lf_t
 
-#@njit(parallel=True)
-#def _compute_percolation_from_soil(S_t, S_thresh, S_max, K_perc):
-#    n = len(S_t)
-#    q_perc_t = np.zeros(n, dtype=np.float64)
-#    for i in prange(n):
-#        if (S_t[i] >= S_thresh[i]):
-#            q_perc_t[i] = K_perc[i] * (S_t[i] - S_thresh[i]) / (S_max[i] - S_thresh[i])
-#        elif (S_t[i] < S_thresh[i]):
-#            q_perc_t[i] = 0.
-#        else:
-#            print('Error')
-#            #raise ValueError('Check values of S_t and S_thresh')
-#    return q_perc_t
+@njit
+def compute_percolation_from_soil(S_t, K_perc):
+    n = len(S_t)
+    q_perc_t = np.zeros(n, dtype=np.float64)
+    for i in range(n):
+        q_perc_t[i] = K_perc[i] * S_t[i]
+    return q_perc_t
 
-#@njit
-#def compute_infiltration_rate__schaake(S_t, p_t, S_max, schaake_constant):
-#    n = len(S_t)
-#    I_t = np.zeros(n, dtype=np.float64)
-#    for i in range(n):
-#        S_deficit = S_max[i] - S_t[i]
-#        if S_deficit < 0:
-#            I_t[i] = 0.
-#        else:
-#            I_c_t = S_deficit * (1 - math.exp(schaake_constant[i]))
-#            I_t[i] = min(p_t[i] * I_c_t / (p_t[i] + I_c_t), p_t[i])
-#    return I_t
+@njit
+def compute_infiltration_rate__greenampt(S_t, p_t, K_h_sat, psi_f, d_theta):
+    n = len(S_t)
+    I_t = np.zeros(n, dtype=np.float64)
+    for i in range(n):
+        I_p_t = K_h_sat[i] * (psi_f[i] * d_theta[i] + S_t[i]) / S_t[i]
+        I_t[i] = min(I_p_t, p_t[i])
+    return I_t
 
 # Differentiable versions
 
@@ -786,11 +743,11 @@ def smoothmax(x1, x2, a=10.):
     den = np.exp(a * x1) + np.exp(a * x2)
     return num / den
 
-def compute_et_from_soil(S_t, S_thresh, S_wilt, pet_t):
-    loc = (S_thresh + S_wilt) / 2
-    scale = (S_thresh - S_wilt) / 4
-    et_soil_t = pet_t * sigmoid(S_t, loc=loc, scale=scale)
-    return et_soil_t
+#def compute_et_from_soil(S_t, S_thresh, S_wilt, pet_t):
+#    loc = (S_thresh + S_wilt) / 2
+#    scale = (S_thresh - S_wilt) / 4
+#    et_soil_t = pet_t * sigmoid(S_t, loc=loc, scale=scale)
+#    return et_soil_t
 
 def compute_lateral_flow_in_soil(S_t, S_thresh, S_max, K_lf):
     loc = S_thresh
@@ -798,11 +755,11 @@ def compute_lateral_flow_in_soil(S_t, S_thresh, S_max, K_lf):
     q_lf_t = K_lf * softplus(S_t, loc=loc, scale=scale)
     return q_lf_t
 
-def compute_percolation_from_soil(S_t, S_thresh, S_max, K_perc):
-    loc = S_thresh
-    scale = 1 / (S_max - S_thresh)
-    q_perc_t = K_perc * softplus(S_t, loc=loc, scale=scale)
-    return q_perc_t
+#def compute_percolation_from_soil(S_t, S_thresh, S_max, K_perc):
+#    loc = S_thresh
+#    scale = 1 / (S_max - S_thresh)
+#    q_perc_t = K_perc * softplus(S_t, loc=loc, scale=scale)
+#    return q_perc_t
 
 def compute_infiltration_rate__schaake(S_t, p_t, S_max, schaake_constant):
     loc = 0.
