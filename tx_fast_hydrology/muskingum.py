@@ -752,6 +752,7 @@ class Reservoir():
             'A_s' : self.A_s,
             'C_w' : self.C_w,
             'L' : self.L,
+            'L_d' : self.L_d,
             'h_max' : self.h_max,
             'h_w' : self.h_w,
             'h_o' : self.h_o,
@@ -769,7 +770,7 @@ class Reservoir():
 
     def load_model(self, obj, load_optional=True):
         required_fields = {'name', 'datetime', 'timedelta', 'reach_ids', 'reservoir_id', 'outlet_index',
-                           'A_s', 'C_w', 'L', 'h_max', 'h_w', 'h_o', 'C_o', 'O_a', 'h_t', 'o_t'}
+                           'A_s', 'C_w', 'L', 'L_d', 'h_max', 'h_w', 'h_o', 'C_o', 'O_a', 'h_t', 'o_t'}
         optional_fields = {}
         defaults = {'name' : str(uuid.uuid4()), 
                     'datetime' : DEFAULT_START_TIME,
@@ -784,6 +785,7 @@ class Reservoir():
             assert isinstance(obj['A_s'], np.ndarray)
             assert isinstance(obj['C_w'], np.ndarray)
             assert isinstance(obj['L'], np.ndarray)
+            assert isinstance(obj['L_d'], np.ndarray)
             assert isinstance(obj['h_max'], np.ndarray)
             assert isinstance(obj['h_w'], np.ndarray)
             assert isinstance(obj['h_o'], np.ndarray)
@@ -794,6 +796,7 @@ class Reservoir():
             assert obj['A_s'].dtype == np.float64
             assert obj['C_w'].dtype == np.float64
             assert obj['L'].dtype == np.float64
+            assert obj['L_d'].dtype == np.float64
             assert obj['h_max'].dtype == np.float64
             assert obj['h_w'].dtype == np.float64
             assert obj['h_o'].dtype == np.float64
@@ -804,7 +807,7 @@ class Reservoir():
         except:
             raise TypeError('Typing of input arrays is incorrect.')
         try:
-            assert (obj['C_w'].size == obj['L'].size == obj['h_max'].size 
+            assert (obj['C_w'].size == obj['L'].size == obj['L_d'].size == obj['h_max'].size 
                     == obj['h_w'].size == obj['h_o'].size == obj['C_o'].size 
                     == obj['O_a'].size == obj['h_t'].size)
             assert(obj['o_t'].size == len(obj['reach_ids']))
@@ -829,18 +832,31 @@ class Reservoir():
         obj = load_reservoir_model_file(file_path, load_optional=load_optional)
         self.load_model(obj)
 
+    def Q_d(self, h):
+        C_w = self.C_w
+        L = self.L
+        L_d = self.L_d
+        h_max = self.h_max
+        h_o = self.h_o
+        dh = np.maximum(h - (h_max - h_o), 0.)
+        return C_w * L * L_d * dh**(3/2)
+
     def Q_w(self, h):
         C_w = self.C_w
         L = self.L
         h_w = self.h_w
         h_o = self.h_o
-        return C_w * L * np.maximum(h - (h_w - h_o), 0.)**(3/2)
+        h_max = self.h_max
+        dh = np.maximum(h - (h_w - h_o), 0.)
+        dh = np.minimum(dh, h_max - h_w)
+        return C_w * L * dh**(3/2)
     
     def Q_o(self, h):
         C_o = self.C_o
         O_a = self.O_a
         g = 9.81
-        return C_o * O_a * np.sqrt(2 * g * np.maximum(h, 0.))
+        dh = np.maximum(h, 0.)
+        return C_o * O_a * np.sqrt(2 * g * dh)
     
     def step(self, p_t_next, timedelta=None):
         return self.step_iter(p_t_next, timedelta=timedelta)
@@ -855,13 +871,14 @@ class Reservoir():
         i_t_prev = self.i_t_next
         o_t_prev = self.o_t_next
         h_t_prev = self.h_t_next
+        q_d_t = self.Q_d(h_t_prev)
         q_w_t = self.Q_w(h_t_prev)
         q_o_t = self.Q_o(h_t_prev)
         outlet_index = self.outlet_index
         i_t_prev_sum = i_t_prev.sum()
         p_t_next_sum = p_t_next.sum()
-        h_t_next = h_t_prev + (dt / A_s) * (p_t_next_sum + i_t_prev_sum - q_o_t - q_w_t)
-        o_t_out_next = q_w_t + q_o_t
+        h_t_next = h_t_prev + (dt / A_s) * (p_t_next_sum + i_t_prev_sum - q_o_t - q_w_t - q_d_t)
+        o_t_out_next = q_d_t + q_w_t + q_o_t
         o_t_next = np.zeros(self.n)
         o_t_next[outlet_index] = o_t_out_next
         self.h_t_next = h_t_next
@@ -1074,7 +1091,7 @@ def load_muskingum_model_file(file_path, load_optional=True):
 
 def load_reservoir_model_file(file_path, load_optional=True):
     required_fields = {'name', 'datetime', 'timedelta', 'reach_ids', 'reservoir_id', 'outlet_index',
-                       'A_s', 'C_w', 'L', 'h_max', 'h_w', 'h_o', 'C_o', 'O_a', 'h_t', 'o_t'}
+                       'A_s', 'C_w', 'L', 'L_d', 'h_max', 'h_w', 'h_o', 'C_o', 'O_a', 'h_t', 'o_t'}
     with open(file_path, 'r') as f:
         obj = json.load(f, cls=ModelDecoder)
     try:
@@ -1084,6 +1101,7 @@ def load_reservoir_model_file(file_path, load_optional=True):
     obj['A_s'] = np.asarray(obj['A_s'], dtype=np.float64)
     obj['C_w'] = np.asarray(obj['C_w'], dtype=np.float64)
     obj['L'] = np.asarray(obj['L'], dtype=np.float64)
+    obj['L_d'] = np.asarray(obj['L_d'], dtype=np.float64)
     obj['h_max'] = np.asarray(obj['h_max'], dtype=np.float64)
     obj['h_w'] = np.asarray(obj['h_w'], dtype=np.float64)
     obj['h_o'] = np.asarray(obj['h_o'], dtype=np.float64)
@@ -1092,7 +1110,7 @@ def load_reservoir_model_file(file_path, load_optional=True):
     obj['h_t'] = np.asarray(obj['h_t'], dtype=np.float64)
     obj['o_t'] = np.asarray(obj['o_t'], dtype=np.float64)
     try:
-        assert (obj['C_w'].size == obj['L'].size == obj['h_max'].size 
+        assert (obj['C_w'].size == obj['L'].size == obj['L_d'].size == obj['h_max'].size 
                 == obj['h_w'].size == obj['h_o'].size == obj['C_o'].size 
                 == obj['O_a'].size == obj['h_t'].size)
     except:

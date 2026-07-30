@@ -49,6 +49,8 @@ class ModelDecoder(json.JSONDecoder):
                 return np.asarray(value, dtype=np.float64)
             case 'L':
                 return np.asarray(value, dtype=np.float64)
+            case 'L_d':
+                return np.asarray(value, dtype=np.float64)
             case 'h_max':
                 return np.asarray(value, dtype=np.float64)
             case 'h_w':
