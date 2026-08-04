@@ -952,6 +952,16 @@ class Reservoir():
         # TODO: Initialize only h_t
         pass
 
+    def bind_callback(self, callback, key='callback'):
+        # TODO: DRY
+        assert isinstance(callback, BaseCallback)
+        self.callbacks[key] = callback
+
+    def unbind_callback(self, key):
+        # TODO: DRY
+        return self.callbacks.pop(key)
+
+
 class Connection():
     def __init__(self, upstream_model, downstream_model, 
                  upstream_index, downstream_index, name=None):
