@@ -382,3 +382,67 @@ class KalmanSmootherIO(KalmanSmoother):
         o_hat_s.columns = self.model.reach_ids
         self.i_hat_s = i_hat_s
         self.o_hat_s = o_hat_s
+
+
+class ReservoirNudging(BaseCallback):
+    def __init__(self, model, measurements):
+        self.model = model
+        self.measurements = measurements
+        self.datetime = copy.deepcopy(model.datetime)
+
+        assert isinstance(measurements.index, pd.core.indexes.datetimes.DatetimeIndex)
+        assert (measurements.index.tz == datetime.timezone.utc)
+        assert (measurements.shape[1] == 1)
+
+        self.saved_states = {}
+        self.save_state()
+
+    def __on_simulation_start__(self):
+        # TODO: Double-check for off-by-one error
+        if self.model.datetime > self.latest_timestamp:
+            return None
+        else:
+            return self.filter()
+
+    def __on_step_end__(self):
+        # TODO: Double-check for off-by-one error
+        if self.model.datetime > self.latest_timestamp:
+            return None
+        else:
+            return self.filter()
+
+    @property
+    def latest_measurement(self):
+        return self.measurements.iloc[-1, :].values
+
+    @property
+    def latest_timestamp(self):
+        return self.measurements.index[-1]
+
+    def interpolate_input(self, datetime, method='linear'):
+        datetime = float(datetime.value)
+        datetimes = self.measurements.index.astype(int).astype(float).values
+        samples = self.measurements.values
+        if method == 'linear':
+            method_code = 1
+        elif method == 'nearest':
+            method_code = 0
+        else:
+            raise ValueError
+        return interpolate_sample(datetime, datetimes, samples, method=method_code)
+
+    def save_state(self):
+        self.saved_states["datetime"] = self.datetime
+
+    def load_state(self):
+        self.datetime = self.saved_states["datetime"]
+
+    def filter(self):
+        datetime = self.model.datetime
+        # Computed parameters
+        outlet_index = self.model.outlet_index
+        Z = self.interpolate_input(datetime).item()
+        # Save posterior estimates
+        self.model.o_t_next[outlet_index] = Z        
+        # Update time
+        self.datetime = datetime
