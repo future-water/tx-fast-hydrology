@@ -62,7 +62,8 @@ def has_same_index(known_index, dataframe_index):
     return False
 
 @njit
-def _ax_bu(startnodes, endnodes, alpha, beta, chi, gamma, i_t_prev, o_t_prev, q_t_next, indegree):
+def _ax_bu(startnodes, endnodes, alpha, beta, chi, gamma, i_t_prev,
+           o_t_prev, q_t_next, indegree, previous_nudge):
     n = endnodes.size
     m = startnodes.size
     i_t_next = np.zeros(n, dtype=np.float64)
@@ -77,10 +78,23 @@ def _ax_bu(startnodes, endnodes, alpha, beta, chi, gamma, i_t_prev, o_t_prev, q_
             beta_i = beta[startnode]
             chi_i = chi[startnode]
             gamma_i = gamma[startnode]
-            o_t_next[startnode] += (alpha_i * i_t_next[startnode]
-                                    + beta_i * i_t_prev[startnode]
-                                    + chi_i * o_t_prev[startnode]
-                                    + gamma_i * q_t_next[startnode])
+            nudge_i = previous_nudge[startnode]
+            if nudge_i == 0.0:
+                # Preserve the original arithmetic exactly for the normal,
+                # unnudged routing path.
+                o_t_next[startnode] += (alpha_i * i_t_next[startnode]
+                                        + beta_i * i_t_prev[startnode]
+                                        + chi_i * o_t_prev[startnode]
+                                        + gamma_i * q_t_next[startnode])
+            else:
+                # WRF-Hydro equation 4.7 adds the previous downstream nudge
+                # to both upstream-inflow terms at the gaged reach.
+                o_t_next[startnode] += (
+                    alpha_i * (i_t_next[startnode] + nudge_i)
+                    + beta_i * (i_t_prev[startnode] + nudge_i)
+                    + chi_i * o_t_prev[startnode]
+                    + gamma_i * q_t_next[startnode]
+                )
             if startnode != endnode:
                 i_t_next[endnode] += o_t_next[startnode]
             indegree_t[endnode] -= 1
@@ -138,7 +152,10 @@ def numba_init_inflows(a, indices, b):
     n = len(indices)
     for i in range(n):
         k = indices[i]
-        a[k] += b[i]
+        # A self-loop marks a terminal reach; it is not a physical upstream
+        # contribution to that reach's next inflow.
+        if i != k:
+            a[k] += b[i]
 
 @njit
 def _ap(P, out, startnodes, endnodes, alpha, beta, chi,
@@ -212,6 +229,64 @@ def _aqat_par(P, out, startnodes, endnodes, alpha, beta, chi,
                           i_t_prev, o_t_prev, indegree)
         out[:, i] = o_t_next
     return out
+
+@njit(cache=True)
+def _mc_frozen_matvec(vector, endnodes, alpha, beta, chi):
+    """Apply the frozen transition for ``assume_short_ts=True``.
+
+    In t-route's optional short-timestep approximation, every reach uses saved
+    upstream flow for both upstream terms. Holding the latest K/X-derived
+    coefficients fixed therefore gives
+
+        y[j] = chi[j] * vector[j]
+             + (alpha[j] + beta[j]) * sum(vector[direct upstream])
+
+    Outlet self-loops are topology sentinels, not physical upstream reaches,
+    and are deliberately excluded.
+    """
+    n = endnodes.size
+    result = np.empty(n, dtype=np.float64)
+    for reach in range(n):
+        result[reach] = chi[reach] * vector[reach]
+    for upstream in range(n):
+        downstream = endnodes[upstream]
+        if upstream != downstream:
+            result[downstream] += (
+                alpha[downstream] + beta[downstream]
+            ) * vector[upstream]
+    return result
+
+
+@njit(parallel=True, cache=True)
+def _short_ts_aqat_par(P, out, endnodes, alpha, beta, chi):
+    """Return A @ P @ A.T for ``assume_short_ts=True``.
+
+    This recycles the two-pass strategy used by _aqat_par but applies the
+    direct-upstream transition of t-route's optional short-timestep mode.
+    P must be a symmetric covariance matrix and out must be a distinct array
+    with the same shape.
+    """
+    m, n = P.shape
+    assert m == n
+    assert out.shape == P.shape
+
+    # First pass: out = A @ P, independently by covariance column.
+    for i in prange(n):
+        out[:, i] = _mc_frozen_matvec(
+            P[:, i], endnodes, alpha, beta, chi
+        )
+
+    # For symmetric P, (A @ P).T = P @ A.T. Applying A once more to
+    # every column therefore produces A @ P @ A.T. Copy each column
+    # before writing because work is a transposed view of out.
+    work = out.T
+    for i in prange(n):
+        vector = work[:, i].copy()
+        work[:, i] = _mc_frozen_matvec(
+            vector, endnodes, alpha, beta, chi
+        )
+    return work
+
 
 @njit
 def _polevl(x, coefs, N):

@@ -15,9 +15,9 @@ class ModelEncoder(json.JSONEncoder):
             return obj.isoformat()
         elif isinstance(obj, np.ndarray):
             return obj.tolist()
-        elif isinstance(obj, np.int_):
+        elif isinstance(obj, np.integer):
             return int(obj)
-        elif isinstance(obj, np.float_):
+        elif isinstance(obj, np.floating):
             return float(obj)
         # Let the base class default method raise the TypeError
         return super().default(obj)
@@ -70,4 +70,3 @@ class ModelDecoder(json.JSONDecoder):
             return {k : self.parse_fields(k, v) for k, v, in obj.items()}
         else:
             return obj
-

@@ -1,3 +1,4 @@
+"""Kalman Filter and Extended Kalman Filter"""
 import os
 import copy
 import datetime
@@ -6,8 +7,15 @@ import numpy as np
 import pandas as pd
 import scipy.linalg
 from tx_fast_hydrology.nutils import interpolate_sample, interpolate_samples
-from tx_fast_hydrology.nutils import _ap_par, _aqat_par, _apply_gain
+from tx_fast_hydrology.nutils import (
+    _ap_par, _aqat_par, _apply_gain, _short_ts_aqat_par,
+)
 from tx_fast_hydrology.callbacks import BaseCallback
+from tx_fast_hydrology.nudging import (
+    StreamflowNudging,
+    TRouteStreamflowNudging,
+    WRFHydroStreamflowNudging,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -26,7 +34,7 @@ class KalmanFilter(BaseCallback):
 
         assert isinstance(measurements.index, pd.core.indexes.datetimes.DatetimeIndex)
         assert (measurements.index.tz == datetime.timezone.utc)
-        assert np.in1d(measurements.columns, self.reach_ids).all()
+        assert np.isin(measurements.columns, self.reach_ids).all()
 
         reach_index_map = pd.Series(np.arange(len(self.reach_ids)), index=self.reach_ids)
         reach_indices = reach_index_map.loc[self.gage_reach_ids].values.astype(int)
@@ -70,7 +78,7 @@ class KalmanFilter(BaseCallback):
 
     def interpolate_input(self, datetime, method='linear'):
         datetime = float(datetime.value)
-        datetimes = self.measurements.index.astype(int).astype(float).values
+        datetimes = self.measurements.index.astype('int64').astype(float).values
         samples = self.measurements.values
         if method == 'linear':
             method_code = 1
@@ -134,6 +142,113 @@ class KalmanFilter(BaseCallback):
         self.gain = gain
         # Update time
         self.datetime = datetime
+
+
+class ExtendedKalmanFilter(KalmanFilter):
+    """Frozen-coefficient EKF for Muskingum-Cunge models.
+
+    The nonlinear routing step updates K and X before this callback runs.
+    Those coefficients are held fixed for the covariance prediction. The
+    topological mode reuses the original matrix-free ``_aqat_par`` traversal;
+    the short-timestep mode uses its direct-upstream counterpart. Neither path
+    constructs a dense transition matrix.
+    """
+
+    def __init__(self, model, measurements, Q_cov, R_cov, P_t_init):
+        if not callable(getattr(model, 'state_transition_jacobian', None)):
+            raise TypeError('ExtendedKalmanFilter requires a model with '
+                            'state_transition_jacobian()')
+
+        Q_cov = np.asarray(Q_cov, dtype=np.float64)
+        R_cov = np.asarray(R_cov, dtype=np.float64)
+        P_t_init = np.asarray(P_t_init, dtype=np.float64)
+        expected_state_shape = (model.n, model.n)
+        expected_measurement_shape = (
+            measurements.shape[1], measurements.shape[1]
+        )
+        if P_t_init.shape != expected_state_shape:
+            raise ValueError(f'P_t_init has shape {P_t_init.shape}; '
+                             f'expected {expected_state_shape}')
+        if Q_cov.shape != expected_state_shape:
+            raise ValueError(f'Q_cov has shape {Q_cov.shape}; '
+                             f'expected {expected_state_shape}')
+        if R_cov.shape != expected_measurement_shape:
+            raise ValueError(f'R_cov has shape {R_cov.shape}; '
+                             f'expected {expected_measurement_shape}')
+
+        super().__init__(model, measurements, Q_cov, R_cov, P_t_init.copy())
+        self.F = None
+        self.covariance_trace_history = {}
+
+    def filter(self):
+        P_t_prev = self.P_t_next
+        i_t_next = self.model.i_t_next.copy()
+        o_t_next = self.model.o_t_next.copy()
+        datetime = self.model.datetime
+
+        observations = self.interpolate_input(datetime)
+        valid = np.isfinite(observations)
+        observation_indices = self.reach_indices[valid]
+        dz = observations[valid] - o_t_next[observation_indices]
+
+        # Apply the selected frozen routing operator directly to covariance;
+        # the dense Jacobian is reserved for diagnostics and small tests.
+        out = np.empty(P_t_prev.shape, dtype=np.float64)
+        if self.model.assume_short_ts:
+            P_t_prior = _short_ts_aqat_par(
+                P_t_prev, out, self.model.endnodes,
+                self.model.alpha, self.model.beta, self.model.chi,
+            )
+        else:
+            sub_startnodes = self.model.startnodes[
+                self.model.indegree == 0
+            ]
+            P_t_prior = _aqat_par(
+                P_t_prev, out, sub_startnodes, self.model.endnodes,
+                self.model.alpha, self.model.beta, self.model.chi,
+                self.model.indegree,
+            )
+        P_t_prior += self.Q_cov
+        P_t_prior = 0.5 * (P_t_prior + P_t_prior.T)
+
+        gain = np.zeros(self.model.n, dtype=np.float64)
+        if observation_indices.size:
+            # H is a row selector, so its products reduce to covariance slices.
+            R_cov = self.R_cov[np.ix_(valid, valid)]
+            innovation_cov = (
+                P_t_prior[np.ix_(observation_indices, observation_indices)]
+                + R_cov
+            )
+            K = np.linalg.solve(
+                innovation_cov, P_t_prior[observation_indices, :]
+            ).T
+            gain = K @ dz
+            P_t_next = (
+                P_t_prior - K @ P_t_prior[observation_indices, :]
+            )
+            P_t_next = 0.5 * (P_t_next + P_t_next.T)
+        else:
+            K = np.empty((self.model.n, 0), dtype=np.float64)
+            P_t_next = P_t_prior
+
+        sub_startnodes = self.model.startnodes[(self.model.indegree == 0)]
+        i_t_gain, o_t_gain = _apply_gain(
+            sub_startnodes, self.model.endnodes, gain,
+            self.model.indegree,
+        )
+        self.model.i_t_next = i_t_next + i_t_gain
+        self.model.o_t_next = o_t_next + o_t_gain
+
+        self.P_t_prior = P_t_prior
+        self.P_t_next = P_t_next
+        self.P_t_prev = P_t_prev
+        self.observation_indices = observation_indices
+        self.K = K
+        self.dz = dz
+        self.gain = gain
+        self.datetime = datetime
+        self.F = None
+        self.covariance_trace_history[datetime] = float(np.trace(P_t_next))
 
 
 class KalmanSmoother(KalmanFilter):
@@ -385,12 +500,16 @@ class KalmanSmootherIO(KalmanSmoother):
 
 
 class ReservoirNudging(BaseCallback):
+    """Replace reservoir outlet flow with time-interpolated RFC forecasts."""
+
     def __init__(self, model, measurements):
         self.model = model
         self.measurements = measurements
         self.datetime = copy.deepcopy(model.datetime)
 
-        assert isinstance(measurements.index, pd.core.indexes.datetimes.DatetimeIndex)
+        assert isinstance(
+            measurements.index, pd.core.indexes.datetimes.DatetimeIndex
+        )
         assert (measurements.index.tz == datetime.timezone.utc)
         assert (measurements.shape[1] == 1)
 
@@ -421,7 +540,9 @@ class ReservoirNudging(BaseCallback):
 
     def interpolate_input(self, datetime, method='linear'):
         datetime = float(datetime.value)
-        datetimes = self.measurements.index.astype(int).astype(float).values
+        # Timestamp.value is always nanoseconds, even when a newer Pandas
+        # version stores the DatetimeIndex at microsecond resolution.
+        datetimes = self.measurements.index.as_unit('ns').asi8.astype(float)
         samples = self.measurements.values
         if method == 'linear':
             method_code = 1
@@ -429,7 +550,9 @@ class ReservoirNudging(BaseCallback):
             method_code = 0
         else:
             raise ValueError
-        return interpolate_sample(datetime, datetimes, samples, method=method_code)
+        return interpolate_sample(
+            datetime, datetimes, samples, method=method_code
+        )
 
     def save_state(self):
         self.saved_states["datetime"] = self.datetime
@@ -443,6 +566,6 @@ class ReservoirNudging(BaseCallback):
         outlet_index = self.model.outlet_index
         Z = self.interpolate_input(datetime).item()
         # Save posterior estimates
-        self.model.o_t_next[outlet_index] = Z        
+        self.model.o_t_next[outlet_index] = Z
         # Update time
         self.datetime = datetime
