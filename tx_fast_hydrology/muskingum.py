@@ -454,8 +454,25 @@ class Muskingum:
         gamma = self.gamma
         for _, callback in self.callbacks.items():
             callback.__on_step_start__()
+
+        # WRF-Hydro nudging publishes the previous downstream correction for
+        # addition to both upstream-flow terms at that gaged reach. Callbacks
+        # without this optional property, including t-route nudging, leave the
+        # original linear routing path unchanged.
+        previous_nudge = np.zeros(self.n, dtype=np.float64)
+        for callback in self.callbacks.values():
+            candidate = getattr(callback, 'routing_nudge', None)
+            if candidate is None:
+                continue
+            candidate = np.asarray(candidate, dtype=np.float64)
+            if candidate.shape != (self.n,):
+                raise ValueError('Callback routing_nudge must have one value '
+                                 'per reach')
+            previous_nudge += candidate
+
         i_t_next, o_t_next = _ax_bu(sub_startnodes, endnodes, alpha, beta, chi, gamma,
-                                    i_t_prev, o_t_prev, p_t_next, indegree)
+                                    i_t_prev, o_t_prev, p_t_next, indegree,
+                                    previous_nudge)
         self.o_t_next = o_t_next
         self.o_t_prev = o_t_prev
         self.i_t_next = i_t_next
@@ -487,7 +504,7 @@ class Muskingum:
         raise NotImplementedError
         assert isinstance(dataframe.index, pd.core.indexes.datetimes.DatetimeIndex)
         # assert (dataframe.index.tz == datetime.timezone.utc)
-        assert np.in1d(self.reach_ids, dataframe.columns).all()
+        assert np.isin(self.reach_ids, dataframe.columns).all()
         dataframe = dataframe[self.reach_ids]
         dataframe.index = dataframe.index.tz_convert("UTC")
         self.datetime = dataframe.index[0]
@@ -500,7 +517,7 @@ class Muskingum:
     def simulate_iter(self, dataframe, start_time=None, end_time=None, o_t_init=None, **kwargs):
         assert isinstance(dataframe.index, pd.core.indexes.datetimes.DatetimeIndex)
         assert (dataframe.index.tz == datetime.timezone.utc)
-        assert np.in1d(self.reach_ids, dataframe.columns).all()
+        assert np.isin(self.reach_ids, dataframe.columns).all()
         # Set start and end times
         # TODO: Put in checks here
         if end_time is None:
@@ -528,7 +545,7 @@ class Muskingum:
         while self.datetime < end_time:
             next_timestep = self.datetime + self.timedelta
             p_t_next = interpolate_sample(float(next_timestep.value), 
-                                          dataframe.index.astype(int).astype(float).values,
+                                          dataframe.index.astype('int64').astype(float).values,
                                           dataframe.values) 
             self.step_iter(p_t_next, **kwargs)
             yield self
@@ -731,12 +748,14 @@ class Reservoir():
         # Create logger
         self.logger = logging.getLogger(self.name)
 
+        initial_o_t = self.o_t.copy()
+        initial_h_t = self.h_t.copy()
         self.i_t_next = np.zeros(self.n, dtype=np.float64)
         self.i_t_prev = np.zeros(self.n, dtype=np.float64)
-        self.o_t_next = np.zeros(self.n, dtype=np.float64)
-        self.o_t_prev = np.zeros(self.n, dtype=np.float64)
-        self.h_t_next = np.zeros(1, dtype=np.float64)
-        self.h_t_prev = np.zeros(1, dtype=np.float64)
+        self.o_t_next = initial_o_t
+        self.o_t_prev = initial_o_t.copy()
+        self.h_t_next = initial_h_t
+        self.h_t_prev = initial_h_t.copy()
 
         self.save_state()
 
@@ -878,7 +897,9 @@ class Reservoir():
         i_t_prev_sum = i_t_prev.sum()
         p_t_next_sum = p_t_next.sum()
         h_t_next = h_t_prev + (dt / A_s) * (p_t_next_sum + i_t_prev_sum - q_o_t - q_w_t - q_d_t)
-        o_t_out_next = q_d_t + q_w_t + q_o_t
+        # The reservoir parameter arrays describe the contributing outlet
+        # structures, while outlet_index identifies one routed reach.
+        o_t_out_next = float(np.sum(q_d_t + q_w_t + q_o_t))
         o_t_next = np.zeros(self.n)
         o_t_next[outlet_index] = o_t_out_next
         self.h_t_next = h_t_next
@@ -893,7 +914,7 @@ class Reservoir():
     def simulate_iter(self, dataframe, start_time=None, end_time=None, o_t_init=None, **kwargs):
         assert isinstance(dataframe.index, pd.core.indexes.datetimes.DatetimeIndex)
         assert (dataframe.index.tz == datetime.timezone.utc)
-        assert np.in1d(self.reach_ids, dataframe.columns).all()
+        assert np.isin(self.reach_ids, dataframe.columns).all()
         # Set start and end times
         # TODO: Put in checks here
         if end_time is None:
@@ -921,7 +942,7 @@ class Reservoir():
         while self.datetime < end_time:
             next_timestep = self.datetime + self.timedelta
             p_t_next = interpolate_sample(float(next_timestep.value), 
-                                          dataframe.index.astype(int).astype(float).values,
+                                          dataframe.index.astype('int64').astype(float).values,
                                           dataframe.values) 
             self.step_iter(p_t_next, **kwargs)
             yield self
@@ -949,8 +970,24 @@ class Reservoir():
             callback.__on_load_state__()
 
     def init_states(self, o_t_next=None, i_t_next=None, h_t_next=None):
-        # TODO: Initialize only h_t
-        pass
+        if o_t_next is not None:
+            values = np.asarray(o_t_next, dtype=np.float64)
+            if values.shape != (self.n,):
+                raise ValueError('o_t_next must contain one value per reach')
+            self.o_t_next = values.copy()
+            self.o_t_prev = values.copy()
+        if i_t_next is not None:
+            values = np.asarray(i_t_next, dtype=np.float64)
+            if values.shape != (self.n,):
+                raise ValueError('i_t_next must contain one value per reach')
+            self.i_t_next = values.copy()
+            self.i_t_prev = values.copy()
+        if h_t_next is not None:
+            values = np.asarray(h_t_next, dtype=np.float64)
+            if values.shape != self.A_s.shape:
+                raise ValueError('h_t_next must contain one value per reservoir')
+            self.h_t_next = values.copy()
+            self.h_t_prev = values.copy()
 
     def bind_callback(self, callback, key='callback'):
         # TODO: DRY
@@ -1203,6 +1240,11 @@ def load_model_collection(file_path, load_optional=True):
         obj = model_info['model']
         if model_type == 'muskingum':
             model = Muskingum(obj, load_optional=load_optional)
+        elif model_type == 'muskingum_cunge':
+            # Local import avoids a module cycle: MuskingumCunge subclasses
+            # Muskingum from this module.
+            from tx_fast_hydrology.muskingum_cunge import MuskingumCunge
+            model = MuskingumCunge(obj, load_optional=load_optional)
         elif model_type == 'reservoir':
             model = Reservoir(obj, load_optional=load_optional)
         models[model.name] = model
