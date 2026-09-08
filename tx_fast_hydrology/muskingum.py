@@ -137,6 +137,7 @@ class Muskingum:
     split : Splits the model into multiple interconnected submodels.
     """
     def __init__(self, data, load_optional=True, create_state_space=False, sparse=False):
+        self.model_type = 'muskingum'
         self.sparse = sparse
         self.callbacks = {}
         self.saved_states = {}
@@ -146,7 +147,7 @@ class Muskingum:
         if isinstance(data, dict):
             self.load_model(data, load_optional=load_optional)
         elif isinstance(data, str):
-            self.load_model_file(data, load_optional=load_optional)
+            self.load_muskingum_model_file(data, load_optional=load_optional)
         else:
             raise TypeError('`data` must be a file path or dictionary.')
         # Create logger
@@ -300,7 +301,7 @@ class Muskingum:
         self.indegree = self.compute_indegree(startnodes, endnodes)
 
     def load_model_file(self, file_path, load_optional=True):
-        obj = load_model_file(file_path, load_optional=load_optional)
+        obj = load_muskingum_model_file(file_path, load_optional=load_optional)
         self.load_model(obj)
     
     def dump_model_file(self, file_path, dump_optional=True):
@@ -309,7 +310,7 @@ class Muskingum:
 
     @classmethod
     def from_model_file(cls, file_path, load_optional=True, **kwargs):
-        obj = load_model_file(file_path, load_optional=load_optional)
+        obj = load_muskingum_model_file(file_path, load_optional=load_optional)
         newinstance = cls(obj, **kwargs)
         return newinstance
 
@@ -453,8 +454,25 @@ class Muskingum:
         gamma = self.gamma
         for _, callback in self.callbacks.items():
             callback.__on_step_start__()
+
+        # WRF-Hydro nudging publishes the previous downstream correction for
+        # addition to both upstream-flow terms at that gaged reach. Callbacks
+        # without this optional property, including t-route nudging, leave the
+        # original linear routing path unchanged.
+        previous_nudge = np.zeros(self.n, dtype=np.float64)
+        for callback in self.callbacks.values():
+            candidate = getattr(callback, 'routing_nudge', None)
+            if candidate is None:
+                continue
+            candidate = np.asarray(candidate, dtype=np.float64)
+            if candidate.shape != (self.n,):
+                raise ValueError('Callback routing_nudge must have one value '
+                                 'per reach')
+            previous_nudge += candidate
+
         i_t_next, o_t_next = _ax_bu(sub_startnodes, endnodes, alpha, beta, chi, gamma,
-                                    i_t_prev, o_t_prev, p_t_next, indegree)
+                                    i_t_prev, o_t_prev, p_t_next, indegree,
+                                    previous_nudge)
         self.o_t_next = o_t_next
         self.o_t_prev = o_t_prev
         self.i_t_next = i_t_next
@@ -486,7 +504,7 @@ class Muskingum:
         raise NotImplementedError
         assert isinstance(dataframe.index, pd.core.indexes.datetimes.DatetimeIndex)
         # assert (dataframe.index.tz == datetime.timezone.utc)
-        assert np.in1d(self.reach_ids, dataframe.columns).all()
+        assert np.isin(self.reach_ids, dataframe.columns).all()
         dataframe = dataframe[self.reach_ids]
         dataframe.index = dataframe.index.tz_convert("UTC")
         self.datetime = dataframe.index[0]
@@ -499,7 +517,7 @@ class Muskingum:
     def simulate_iter(self, dataframe, start_time=None, end_time=None, o_t_init=None, **kwargs):
         assert isinstance(dataframe.index, pd.core.indexes.datetimes.DatetimeIndex)
         assert (dataframe.index.tz == datetime.timezone.utc)
-        assert np.in1d(self.reach_ids, dataframe.columns).all()
+        assert np.isin(self.reach_ids, dataframe.columns).all()
         # Set start and end times
         # TODO: Put in checks here
         if end_time is None:
@@ -527,7 +545,7 @@ class Muskingum:
         while self.datetime < end_time:
             next_timestep = self.datetime + self.timedelta
             p_t_next = interpolate_sample(float(next_timestep.value), 
-                                          dataframe.index.astype(int).astype(float).values,
+                                          dataframe.index.astype('int64').astype(float).values,
                                           dataframe.values) 
             self.step_iter(p_t_next, **kwargs)
             yield self
@@ -713,6 +731,274 @@ class Muskingum:
         model_collection = ModelCollection(models, name=name)
         return model_collection
 
+class Reservoir():
+    def __init__(self, data, load_optional=False):
+        self.model_type = 'reservoir'
+        self.callbacks = {}
+        self.saved_states = {}
+        self.sinks = []
+        self.sources = []
+        # Read json input file
+        if isinstance(data, dict):
+            self.load_model(data, load_optional=load_optional)
+        elif isinstance(data, str):
+            self.load_reservoir_model_file(data, load_optional=load_optional)
+        else:
+            raise TypeError('`data` must be a file path or dictionary.')
+        # Create logger
+        self.logger = logging.getLogger(self.name)
+
+        initial_o_t = self.o_t.copy()
+        initial_h_t = self.h_t.copy()
+        self.i_t_next = np.zeros(self.n, dtype=np.float64)
+        self.i_t_prev = np.zeros(self.n, dtype=np.float64)
+        self.o_t_next = initial_o_t
+        self.o_t_prev = initial_o_t.copy()
+        self.h_t_next = initial_h_t
+        self.h_t_prev = initial_h_t.copy()
+
+        self.save_state()
+
+    @property
+    def info(self):
+        info_dict = {
+            'name' : self.name,
+            'datetime' : self.datetime,
+            'timedelta' : self.timedelta,
+            'reach_ids' : self.reach_ids,
+            'reservoir_id' : self.reservoir_id,
+            'outlet_index' : self.outlet_index,
+            'A_s' : self.A_s,
+            'C_w' : self.C_w,
+            'L' : self.L,
+            'L_d' : self.L_d,
+            'h_max' : self.h_max,
+            'h_w' : self.h_w,
+            'h_o' : self.h_o,
+            'C_o' : self.C_o,
+            'O_a' : self.O_a,
+            'h_t' : self.h_t_next,
+            'o_t' : self.o_t_next
+        }
+        return info_dict
+
+    @property
+    def dt(self):
+        dt = float(self.timedelta.seconds)
+        return dt
+
+    def load_model(self, obj, load_optional=True):
+        required_fields = {'name', 'datetime', 'timedelta', 'reach_ids', 'reservoir_id', 'outlet_index',
+                           'A_s', 'C_w', 'L', 'L_d', 'h_max', 'h_w', 'h_o', 'C_o', 'O_a', 'h_t', 'o_t'}
+        optional_fields = {}
+        defaults = {'name' : str(uuid.uuid4()), 
+                    'datetime' : DEFAULT_START_TIME,
+                    'timedelta' : DEFAULT_TIMEDELTA,
+                    'paths' : []}
+        # Validate data
+        try:
+            assert required_fields.issubset(set(obj.keys()))
+        except:
+            raise ValueError(f'Model field must contain fields {required_fields}')
+        try:
+            assert isinstance(obj['A_s'], np.ndarray)
+            assert isinstance(obj['C_w'], np.ndarray)
+            assert isinstance(obj['L'], np.ndarray)
+            assert isinstance(obj['L_d'], np.ndarray)
+            assert isinstance(obj['h_max'], np.ndarray)
+            assert isinstance(obj['h_w'], np.ndarray)
+            assert isinstance(obj['h_o'], np.ndarray)
+            assert isinstance(obj['C_o'], np.ndarray)
+            assert isinstance(obj['O_a'], np.ndarray)
+            assert isinstance(obj['h_t'], np.ndarray)
+            assert isinstance(obj['o_t'], np.ndarray)
+            assert obj['A_s'].dtype == np.float64
+            assert obj['C_w'].dtype == np.float64
+            assert obj['L'].dtype == np.float64
+            assert obj['L_d'].dtype == np.float64
+            assert obj['h_max'].dtype == np.float64
+            assert obj['h_w'].dtype == np.float64
+            assert obj['h_o'].dtype == np.float64
+            assert obj['C_o'].dtype == np.float64
+            assert obj['O_a'].dtype == np.float64
+            assert obj['h_t'].dtype == np.float64
+            assert obj['o_t'].dtype == np.float64
+        except:
+            raise TypeError('Typing of input arrays is incorrect.')
+        try:
+            assert (obj['C_w'].size == obj['L'].size == obj['L_d'].size == obj['h_max'].size 
+                    == obj['h_w'].size == obj['h_o'].size == obj['C_o'].size 
+                    == obj['O_a'].size == obj['h_t'].size)
+            assert(obj['o_t'].size == len(obj['reach_ids']))
+        except:
+            raise ValueError('Arrays are not the same length')
+        # If optional fields are desired, add to the set of fields
+        if load_optional:
+            fields = required_fields.union(optional_fields)
+        else:
+            fields = required_fields
+        # Iterate through fields and add as attributes to class instance
+        for field in fields:
+            if field in defaults:
+                default_value = defaults[field]
+                value = obj.setdefault(field, default_value)
+            else:
+                value = obj[field]
+            setattr(self, field, value)
+        self.n = obj['o_t'].size
+
+    def load_model_file(self, file_path, load_optional=True):
+        obj = load_reservoir_model_file(file_path, load_optional=load_optional)
+        self.load_model(obj)
+
+    def Q_d(self, h):
+        C_w = self.C_w
+        L = self.L
+        L_d = self.L_d
+        h_max = self.h_max
+        h_o = self.h_o
+        dh = np.maximum(h - (h_max - h_o), 0.)
+        return C_w * L * L_d * dh**(3/2)
+
+    def Q_w(self, h):
+        C_w = self.C_w
+        L = self.L
+        h_w = self.h_w
+        h_o = self.h_o
+        h_max = self.h_max
+        dh = np.maximum(h - (h_w - h_o), 0.)
+        dh = np.minimum(dh, h_max - h_w)
+        return C_w * L * dh**(3/2)
+    
+    def Q_o(self, h):
+        C_o = self.C_o
+        O_a = self.O_a
+        g = 9.81
+        dh = np.maximum(h, 0.)
+        return C_o * O_a * np.sqrt(2 * g * dh)
+    
+    def step(self, p_t_next, timedelta=None):
+        return self.step_iter(p_t_next, timedelta=timedelta)
+
+    def step_iter(self, p_t_next, timedelta=None):
+        if timedelta is None:
+            timedelta = self.timedelta
+            dt = self.dt
+        else:
+            dt = float(timedelta.seconds)
+        A_s = self.A_s
+        i_t_prev = self.i_t_next
+        o_t_prev = self.o_t_next
+        h_t_prev = self.h_t_next
+        q_d_t = self.Q_d(h_t_prev)
+        q_w_t = self.Q_w(h_t_prev)
+        q_o_t = self.Q_o(h_t_prev)
+        outlet_index = self.outlet_index
+        i_t_prev_sum = i_t_prev.sum()
+        p_t_next_sum = p_t_next.sum()
+        h_t_next = h_t_prev + (dt / A_s) * (p_t_next_sum + i_t_prev_sum - q_o_t - q_w_t - q_d_t)
+        # The reservoir parameter arrays describe the contributing outlet
+        # structures, while outlet_index identifies one routed reach.
+        o_t_out_next = float(np.sum(q_d_t + q_w_t + q_o_t))
+        o_t_next = np.zeros(self.n)
+        o_t_next[outlet_index] = o_t_out_next
+        self.h_t_next = h_t_next
+        self.o_t_next = o_t_next
+        self.h_t_prev = h_t_prev
+        self.o_t_prev = o_t_prev
+        self.datetime += timedelta
+        for _, callback in self.callbacks.items():
+            callback.__on_step_end__()
+        self.logger.debug(f'Stepped to time {self.datetime}')
+
+    def simulate_iter(self, dataframe, start_time=None, end_time=None, o_t_init=None, **kwargs):
+        assert isinstance(dataframe.index, pd.core.indexes.datetimes.DatetimeIndex)
+        assert (dataframe.index.tz == datetime.timezone.utc)
+        assert np.isin(self.reach_ids, dataframe.columns).all()
+        # Set start and end times
+        # TODO: Put in checks here
+        if end_time is None:
+            end_time = dataframe.index.max()
+        else:
+            try:
+                assert isinstance(end_time, pd.Timestamp)
+            except:
+                raise TypeError('`end_time` must be of type `pd.Timestamp`')
+        if start_time is None:
+            start_time = self.datetime
+        else:
+            self.datetime = start_time
+            try:
+                assert o_t_init is not None
+            except:
+                ValueError('If `start_time` is specified, initial state `o_t_init` must be provided.')
+        if o_t_init is not None:
+            self.init_states(o_t_next=o_t_init)
+        # Execute pre-simulation callbacks
+        for _, callback in self.callbacks.items():
+            callback.__on_simulation_start__()
+        # Crop input data to model reaches
+        dataframe = dataframe[self.reach_ids]
+        while self.datetime < end_time:
+            next_timestep = self.datetime + self.timedelta
+            p_t_next = interpolate_sample(float(next_timestep.value), 
+                                          dataframe.index.astype('int64').astype(float).values,
+                                          dataframe.values) 
+            self.step_iter(p_t_next, **kwargs)
+            yield self
+        # Execute post-simulation callbacks
+        for _, callback in self.callbacks.items():
+            callback.__on_simulation_end__()
+
+    def save_state(self):
+        self.logger.info(f'Saving state for model {self.name} at time {self.datetime}...')
+        self.saved_states["datetime"] = self.datetime
+        # TODO: Don't need to store `i_t_next`
+        self.saved_states["i_t_next"] = self.i_t_next.copy()
+        self.saved_states["h_t_next"] = self.h_t_next.copy()
+        self.saved_states["o_t_next"] = self.o_t_next.copy()
+        for _, callback in self.callbacks.items():
+            callback.__on_save_state__()
+
+    def load_state(self):
+        self.datetime = self.saved_states["datetime"]
+        self.i_t_next = self.saved_states["i_t_next"]
+        self.h_t_next = self.saved_states["h_t_next"]
+        self.o_t_next = self.saved_states["o_t_next"]
+        self.logger.info(f'Loading state for model {self.name} at time {self.datetime}...')
+        for _, callback in self.callbacks.items():
+            callback.__on_load_state__()
+
+    def init_states(self, o_t_next=None, i_t_next=None, h_t_next=None):
+        if o_t_next is not None:
+            values = np.asarray(o_t_next, dtype=np.float64)
+            if values.shape != (self.n,):
+                raise ValueError('o_t_next must contain one value per reach')
+            self.o_t_next = values.copy()
+            self.o_t_prev = values.copy()
+        if i_t_next is not None:
+            values = np.asarray(i_t_next, dtype=np.float64)
+            if values.shape != (self.n,):
+                raise ValueError('i_t_next must contain one value per reach')
+            self.i_t_next = values.copy()
+            self.i_t_prev = values.copy()
+        if h_t_next is not None:
+            values = np.asarray(h_t_next, dtype=np.float64)
+            if values.shape != self.A_s.shape:
+                raise ValueError('h_t_next must contain one value per reservoir')
+            self.h_t_next = values.copy()
+            self.h_t_prev = values.copy()
+
+    def bind_callback(self, callback, key='callback'):
+        # TODO: DRY
+        assert isinstance(callback, BaseCallback)
+        self.callbacks[key] = callback
+
+    def unbind_callback(self, key):
+        # TODO: DRY
+        return self.callbacks.pop(key)
+
+
 class Connection():
     def __init__(self, upstream_model, downstream_model, 
                  upstream_index, downstream_index, name=None):
@@ -785,11 +1071,6 @@ class ModelCollection():
         connections = {}
         models = {}
         for model_name, model in self.models.items():
-            # TODO: Path handling seems fragile
-            #file_path_stem = os.path.splitext(file_path)[0]
-            #default_file_path = f'{file_path_stem}.{model_name}.inp'
-            #model_file_paths[model_name] = model_file_paths.setdefault(model_name,
-            #                                                           default_file_path)
             for sink in model.sinks:
                 name = sink.name
                 if not name in connections:
@@ -809,16 +1090,9 @@ class ModelCollection():
                         'downstream_index' : int(source.downstream_index),
                     }})
         for model_name, model in self.models.items():
-            #model_file_path = model_file_paths[model_name]
-            #model.dump_model_file(model_file_path, dump_optional=dump_optional)
-            #model_pointers.append({
-            #    'model' : os.path.abspath(model_file_path),
-            #    'sinks' : [sink.name for sink in model.sinks],
-            #    'sources' : [source.name for source in model.sources]
-            #                 })
-            # TODO: Sinks and sources don't seem to be used
             # TODO: Doesn't allow ignoring optional fields
-            models[model_name] = {'model' : model.info,
+            models[model_name] = {'type' : model.model_type,
+                                  'model' : model.info,
                                   'sinks' : [sink.name for sink in model.sinks],
                                   'sources' : [source.name for source in model.sources]}
         model_collection_info = {
@@ -826,7 +1100,6 @@ class ModelCollection():
             'connections' : connections 
         }
         with open(file_path, 'w') as f:
-            #json.dump(model_collection_info, f)
             json.dump(model_collection_info, f, cls=ModelEncoder)
 
     @classmethod
@@ -836,7 +1109,7 @@ class ModelCollection():
         return newinstance
 
 
-def load_model_file(file_path, load_optional=True):
+def load_muskingum_model_file(file_path, load_optional=True):
     required_fields = {'name', 'datetime', 'timedelta', 'reach_ids',
      'startnodes', 'endnodes', 'K', 'X', 'o_t'}
     with open(file_path, 'r') as f:
@@ -863,8 +1136,43 @@ def load_model_file(file_path, load_optional=True):
                if not k in required_fields}
         return obj
 
+def load_reservoir_model_file(file_path, load_optional=True):
+    required_fields = {'name', 'datetime', 'timedelta', 'reach_ids', 'reservoir_id', 'outlet_index',
+                       'A_s', 'C_w', 'L', 'L_d', 'h_max', 'h_w', 'h_o', 'C_o', 'O_a', 'h_t', 'o_t'}
+    with open(file_path, 'r') as f:
+        obj = json.load(f, cls=ModelDecoder)
+    try:
+        assert required_fields.issubset(set(obj.keys()))
+    except:
+        raise ValueError(f'Model field must contain fields {required_fields}')
+    obj['A_s'] = np.asarray(obj['A_s'], dtype=np.float64)
+    obj['C_w'] = np.asarray(obj['C_w'], dtype=np.float64)
+    obj['L'] = np.asarray(obj['L'], dtype=np.float64)
+    obj['L_d'] = np.asarray(obj['L_d'], dtype=np.float64)
+    obj['h_max'] = np.asarray(obj['h_max'], dtype=np.float64)
+    obj['h_w'] = np.asarray(obj['h_w'], dtype=np.float64)
+    obj['h_o'] = np.asarray(obj['h_o'], dtype=np.float64)
+    obj['C_o'] = np.asarray(obj['C_o'], dtype=np.float64)
+    obj['O_a'] = np.asarray(obj['O_a'], dtype=np.float64)
+    obj['h_t'] = np.asarray(obj['h_t'], dtype=np.float64)
+    obj['o_t'] = np.asarray(obj['o_t'], dtype=np.float64)
+    try:
+        assert (obj['C_w'].size == obj['L'].size == obj['L_d'].size == obj['h_max'].size 
+                == obj['h_w'].size == obj['h_o'].size == obj['C_o'].size 
+                == obj['O_a'].size == obj['h_t'].size)
+    except:
+        raise ValueError('Arrays are not the same length')
+    if load_optional:
+        return obj
+    else:
+        obj = {k : v for k, v in obj.items()
+               if not k in required_fields}
+        return obj
 
+
+# Deprecated in favor of model collection
 def dump_model_file(obj, file_path, dump_optional=True):
+    raise NotImplementedError
     required_fields = {'name', 'datetime', 'timedelta', 'reach_ids',
      'startnodes', 'endnodes', 'K', 'X', 'o_t'}
     with open(file_path, 'w') as f:
@@ -920,15 +1228,25 @@ def load_nhd_geojson(file_path):
 def load_model_collection(file_path, load_optional=True):
     models = {}
     with open(file_path, 'r') as f:
-        #model_collection_info = json.load(f)
         model_collection_info = json.load(f, cls=ModelDecoder)
     connections = model_collection_info['connections']
-    #for model_info in model_collection_info['models']:
     for model_name, model_info in model_collection_info['models'].items():
-        #model_file_path = model_info['model']
-        #model = Muskingum.from_model_file(model_file_path, load_optional=load_optional)
+        # Check model type
+        if 'type' in model_info:
+            model_type = model_info['type']
+        else:
+            model_type = 'muskingum'
+        # Instantiate model
         obj = model_info['model']
-        model = Muskingum(obj, load_optional=load_optional)
+        if model_type == 'muskingum':
+            model = Muskingum(obj, load_optional=load_optional)
+        elif model_type == 'muskingum_cunge':
+            # Local import avoids a module cycle: MuskingumCunge subclasses
+            # Muskingum from this module.
+            from tx_fast_hydrology.muskingum_cunge import MuskingumCunge
+            model = MuskingumCunge(obj, load_optional=load_optional)
+        elif model_type == 'reservoir':
+            model = Reservoir(obj, load_optional=load_optional)
         models[model.name] = model
     for connection_name, connection_dict in connections.items():
         upstream_model = models[connection_dict['upstream_model']]
