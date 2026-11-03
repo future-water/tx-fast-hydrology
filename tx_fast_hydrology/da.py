@@ -76,6 +76,9 @@ class KalmanFilter(BaseCallback):
     def latest_timestamp(self):
         return self.measurements.index[-1]
 
+    def update_measurements(self, measurements):
+        self.measurements = measurements
+
     def interpolate_input(self, datetime, method='linear'):
         datetime = float(datetime.value)
         # ns future compatibility with newer pandas
@@ -147,7 +150,7 @@ class KalmanFilter(BaseCallback):
         o_t_next += o_t_gain
         # Save posterior estimates
         self.model.i_t_next = i_t_next
-        self.model.o_t_next = o_t_next        
+        self.model.o_t_next = o_t_next
         self.P_t_next = P_t_next
         self.P_t_prev = P_t_prev
         self.K = K
@@ -294,7 +297,7 @@ class KalmanSmoother(KalmanFilter):
 
     def __on_simulation_end__(self):
         return self.smooth()
-    
+
     def filter(self):
         # Implements KF after step is called
         P_t_prev = self.P_t_next
@@ -331,7 +334,7 @@ class KalmanSmoother(KalmanFilter):
         o_t_next = o_t_prior + o_t_gain
         # Save posterior estimates
         self.model.i_t_next = i_t_next
-        self.model.o_t_next = o_t_next        
+        self.model.o_t_next = o_t_next
         self.P_t_prev = P_t_prev
         self.P_t_next = P_t_next
         # Save outputs
@@ -456,7 +459,7 @@ class KalmanSmootherIO(KalmanSmoother):
         o_t_next = o_t_prior + o_t_gain
         # Save posterior estimates
         self.model.i_t_next = i_t_next
-        self.model.o_t_next = o_t_next        
+        self.model.o_t_next = o_t_next
         self.P_t_prev = P_t_prev
         self.P_t_next = P_t_next
         # Save outputs
