@@ -23,13 +23,13 @@ python -m venv .venv
 ```
 
 On Linux or macOS, replace `.venv/Scripts/python` with
-`.venv/bin/python`. The NumPy and Numba bounds in `setup.py` are intentional:
-Numba 0.59 supports NumPy 1.22 through 1.26.
+`.venv/bin/python`. The NumPy and Numba bounds in `pyproject.toml` are
+intentional: Numba 0.59 supports NumPy 1.22 through 1.26.
 
 For an exactly reproducible development environment:
 
 ```console
-python -m pip install -r requirements.txt
+python -m pip install -e ".[pinned]"
 ```
 
 ## Muskingum-Cunge and the EKF
