@@ -149,7 +149,8 @@ class BmiKF:
             if not self.with_troute:
                 model.datetime = pd.to_datetime(config["start_date"]) - timedelta
             else:
-                model.datetime = pd.to_datetime(config["start_date"])
+                #troute routs and gives discharge for the 1st timestep, not 0th
+                model.datetime = pd.to_datetime(config["start_date"]) + timedelta
         return model_collection
 
     def initialize(self, config_file="KF.yaml"):
