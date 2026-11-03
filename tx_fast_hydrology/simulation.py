@@ -13,11 +13,10 @@ from tx_fast_hydrology.muskingum_cunge import MuskingumCunge
 logger = logging.getLogger(__name__)
 
 class Simulation():
-    def __init__(self, model_collection, inputs, initial_states=None, with_troute=False):
+    def __init__(self, model_collection, inputs, with_troute=False):
         self.model_collection = model_collection
         self.models = model_collection.models
         self.inputs = self.load_inputs(inputs)
-        self.initial_states = initial_states
         self.with_troute = with_troute
         self.outputs = {}
 
@@ -96,8 +95,8 @@ class Simulation():
         self.model_collection.set_datetime(timestamp)
 
 class AsyncSimulation(Simulation):
-    def __init__(self, model_collection, inputs, initial_states=None, with_troute=False):
-        return super().__init__(model_collection, inputs, initial_states=initial_states, with_troute=with_troute)
+    def __init__(self, model_collection, inputs, with_troute=False):
+        return super().__init__(model_collection, inputs, with_troute=with_troute)
     
     async def simulate(self, only_one_time_step=False):
         try:
@@ -126,25 +125,29 @@ class AsyncSimulation(Simulation):
     async def _simulate(self, taskgroup, model, inputs, name, only_one_time_step=False):
         logger.debug(f'Started job for sub-watershed {name}')
         start_time = model.datetime
-        o_t_init = None
-        if self.initial_states is not None:
-            o_t_init = self.initial_states.get(name)
+        
+        # Grab the initial state directly from the model's current state
+        o_t_init = model.o_t_next.copy()
+
         outputs = {}
-        outputs[start_time] = (
-            o_t_init.copy() if o_t_init is not None else model.o_t_next
-        )
+        outputs[start_time] = o_t_init
 
         if only_one_time_step:
-            state = model.simulate_iter(inputs, o_t_init=o_t_init, only_one_time_step=only_one_time_step, with_troute=self.with_troute)
+            state = model.simulate_iter(
+                inputs, 
+                o_t_init=o_t_init, 
+                only_one_time_step=only_one_time_step, 
+                with_troute=self.with_troute
+            )
 
-            #for with_troute, the current_time and start_time is going to be the same.
-            #because it only runs KF and never steps inside step_iter function
-            #where the model's time step is increased. But the discharge is going to be updated.
+            # for with_troute, the current_time and start_time is going to be the same.
+            # because it only runs KF and never steps inside step_iter function
+            # where the model's time step is increased. But the discharge is going to be updated.
             current_time = state.datetime
             o_t_next = state.o_t_next
             outputs[current_time] = o_t_next
 
-            #get the model ready for the next time step
+            # get the model ready for the next time step
             if self.with_troute:
                 model.datetime += model.timedelta
         else:
@@ -152,15 +155,13 @@ class AsyncSimulation(Simulation):
                 current_time = state.datetime
                 o_t_next = state.o_t_next
                 outputs[current_time] = o_t_next
+                
         outputs = pd.DataFrame.from_dict(outputs, orient='index')
         outputs.index = pd.to_datetime(outputs.index, utc=True)
         outputs.columns = inputs.columns
         self.outputs[name] = outputs
-        if self.initial_states is None:
-            self.initial_states = {}
-        self.initial_states[name] = model.o_t_next.copy()
-        taskgroup.create_task(self._accumulate(taskgroup, outputs, name,
-                                               only_one_time_step))
+        
+        taskgroup.create_task(self._accumulate(taskgroup, outputs, name, only_one_time_step))
 
     async def _accumulate(self, taskgroup, outputs, name, only_one_time_step=False):
         indegree = self._indegree

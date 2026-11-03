@@ -18,7 +18,6 @@ import pandas as pd
 from tx_fast_hydrology.simulation import AsyncSimulation
 from tx_fast_hydrology.da import KalmanFilter
 from tx_fast_hydrology.muskingum import ModelCollection
-from tx_fast_hydrology.simulation import AsyncSimulation
 
 
 #we will have remove this later. This adds streamflow in the upstream boundary
@@ -46,36 +45,64 @@ class BmiKF:
 
     def load_and_build_inputs(self, config):
         model_collection = ModelCollection.from_file(config["network_file_path"])
-        forcing = pd.read_csv(config["forcing_file_path"], index_col=0)
-        streamflow = pd.read_csv(config["streamflow_file_path"], index_col=0)
-        measurements = pd.read_csv(config["measurement_file_path"], index_col=0)
-
-        forcing.index = pd.to_datetime(forcing.index)
-        streamflow.index = pd.to_datetime(streamflow.index)
-        measurements.index = pd.to_datetime(measurements.index)
-
-        forcing.columns = forcing.columns.astype(str)
-        streamflow.columns = streamflow.columns.astype(str)
-        measurements.columns = measurements.columns.astype(str)
-
-        input_columns = list(
-            itertools.chain.from_iterable(
-                [model.reach_ids for model in model_collection.models.values()]
-            )
-        )
-        inputs = pd.DataFrame(0.0, index=forcing.index.copy(), columns=input_columns)
-
-        for col in inputs.columns:
-            if col in forcing.columns:
-                inputs[col] = forcing[col]
 
         dt = model_collection.timedelta.seconds
-        inputs = inputs.resample(f"{dt}s").mean()
-        inputs = inputs.interpolate().bfill().ffill()
-        assert not inputs.isnull().any().any()
 
-        for downstream_reach, upstream_reach in UPSTREAM_INPUTS.items():
-            inputs[downstream_reach] += streamflow[upstream_reach]
+        inputs = None
+        start_date = config["start_date"]
+        end_date = config["end_date"]
+
+        #build these inputs only if with_troute is false
+        #otherwise lateral flow is not needed and just initiated to 0s
+        if not self.with_troute:
+            forcing = pd.read_csv(config["forcing_file_path"], index_col=0)
+            streamflow = pd.read_csv(config["streamflow_file_path"], index_col=0)
+
+            forcing.index = pd.to_datetime(forcing.index)
+            streamflow.index = pd.to_datetime(streamflow.index)
+
+            # Subset forcing and streamflow by the specified time window
+            forcing = forcing.loc[start_date:end_date]
+            streamflow = streamflow.loc[start_date:end_date]
+
+            forcing.columns = forcing.columns.astype(str)
+            streamflow.columns = streamflow.columns.astype(str)
+
+            input_columns = list(
+                itertools.chain.from_iterable(
+                    [model.reach_ids for model in model_collection.models.values()]
+                )
+            )
+            inputs = pd.DataFrame(0.0, index=forcing.index.copy(), columns=input_columns)
+
+            for col in inputs.columns:
+                if col in forcing.columns:
+                    inputs[col] = forcing[col]
+
+            inputs = inputs.resample(f"{dt}s").mean()
+            inputs = inputs.interpolate().bfill().ffill()
+            assert not inputs.isnull().any().any()
+
+            for downstream_reach, upstream_reach in UPSTREAM_INPUTS.items():
+                if upstream_reach in streamflow.columns:
+                    inputs[downstream_reach] += streamflow[upstream_reach]
+
+        else:
+            time_index = pd.date_range(
+            start=start_date, 
+            end=end_date, 
+            freq=f"{dt}s"
+            )
+            input_columns = list(
+                itertools.chain.from_iterable(
+                    [model.reach_ids for model in model_collection.models.values()]
+                    )
+                )
+            inputs = pd.DataFrame(0.0, index=time_index, columns=input_columns)
+
+        measurements = pd.read_csv(config["measurement_file_path"], index_col=0)
+        measurements.index = pd.to_datetime(measurements.index)
+        measurements.columns = measurements.columns.astype(str)
 
         usgs_to_comid = pd.read_csv(config["usgs_to_comid_file_path"], index_col=0)
         usgs_to_comid["gage_id"] = usgs_to_comid["gage_id"].astype(str)
@@ -88,7 +115,9 @@ class BmiKF:
 
         measurements = measurements[usgs_to_comid.index]
         measurements.columns = measurements.columns.map(usgs_to_comid)
-        measurements = measurements.loc[forcing.index[0] : forcing.index[-1]]
+        
+        # Subset measurements by the specified time window
+        measurements = measurements.loc[start_date : end_date]
         measurements = measurements.dropna(axis=1)
         measurements = measurements.loc[:, ~(measurements == 0.0).all(axis=0).values]
         measurements = measurements.loc[:, ~measurements.columns.duplicated()].copy()
@@ -96,7 +125,7 @@ class BmiKF:
 
         return model_collection, measurements, inputs, dt
 
-    def prepare_model(self, model_collection, measurements, inputs, dt):
+    def prepare_model(self, model_collection, measurements, dt, config):
         for model in model_collection.models.values():
             model_sites = [
                 reach_id for reach_id in model.reach_ids if reach_id in measurements.columns
@@ -114,14 +143,22 @@ class BmiKF:
             model.set_transmissive_boundary(outlet)
 
         timedelta = pd.to_timedelta(dt, unit="s")
-        for model_name, model in model_collection.models.items():
-            model.datetime = inputs.index[0] - timedelta
 
+        for model_name, model in model_collection.models.items():
+            #if running KF conventionally, push back the start time by timedelta
+            if not self.with_troute:
+                model.datetime = pd.to_datetime(config["start_date"]) - timedelta
+            else:
+                model.datetime = pd.to_datetime(config["start_date"])
         return model_collection
 
     def initialize(self, config_file="KF.yaml"):
         self.config_file = config_file
         self.config = self.load_config(config_file)
+
+        # Parse with_troute parameter (defaults to False if not provided)
+        with_troute_str = str(self.config.get("with_troute", "false")).strip().lower()
+        self.with_troute = with_troute_str in ["true", "1", "yes", "t"]
 
         (
             self.model_collection,
@@ -129,13 +166,14 @@ class BmiKF:
             self.inputs,
             self.dt,
         ) = self.load_and_build_inputs(self.config)
+        
         self.model_collection = self.prepare_model(
             self.model_collection,
             self.measurements,
-            self.inputs,
             self.dt,
+            self.config
         )
-        self.simulation = AsyncSimulation(self.model_collection, self.inputs)
+        self.simulation = AsyncSimulation(self.model_collection, self.inputs, with_troute=self.with_troute)
         self.outputs_da = None
         self.input_var_store = {name: None for name in self._INPUT_VAR_NAMES}
         self.output_var_store = {name: None for name in self._OUTPUT_VAR_NAMES}
@@ -146,6 +184,7 @@ class BmiKF:
         self._time_step = float(self.model_collection.timedelta.total_seconds())
         self._end_time = float("inf")
         self._initialized = True
+        self._sorted_indices = None
 
     def update(self):
         self.update_until(time_window=self.model_collection.timedelta.total_seconds())
@@ -156,7 +195,7 @@ class BmiKF:
         if time_window % model_timestep != 0:
             raise ValueError(
                 "time_window must be expressible as a multiple of "
-                "model_collection.timedelta."
+                f"model_collection.timedelta. {model_timestep}"
             )
 
         n_steps = int(time_window / model_timestep)
@@ -168,10 +207,26 @@ class BmiKF:
                 [series for series in outputs_da.values()],
                 axis=1,
             )
-            self.output_var_store["reach_list"] = list(self.outputs_da.columns)
-            self.output_var_store["discharge"] = self.outputs_da.loc[
-                self.model_collection.datetime
-            ].values
+            self.output_var_store["reach_list"] = self.outputs_da.columns
+
+            #when run with t-route, we need the discharge for the same timestep
+            #however, the model_collection's datetime will be updated to be
+            #one step in the future
+            if not self.with_troute:
+                self.output_var_store["discharge"] = self.outputs_da.loc[
+                    self.model_collection.datetime
+                ].values
+            else:
+                self.output_var_store["discharge"] = self.outputs_da.loc[
+                    self.model_collection.datetime - self.model_collection.timedelta
+                ].values
+
+        #sort the reach_list once and apply everytime when updating
+        if self._sorted_indices is None:
+            self._sorted_indices = np.argsort(self.output_var_store["reach_list"])
+            
+        self.output_var_store["reach_list"] = self.output_var_store["reach_list"][self._sorted_indices]
+        self.output_var_store["discharge"] = self.output_var_store["discharge"][self._sorted_indices]
 
         self._current_time += time_window
 
@@ -194,6 +249,12 @@ class BmiKF:
     def get_end_time(self):
         return self._end_time
 
+    def get_start_datetime(self):
+        return self._start_datetime
+
+    def get_current_datetime(self):
+        return self.model_collection.datetime
+    
     def get_current_time(self):
         return self._current_time
 
@@ -292,9 +353,24 @@ class BmiKF:
         self._validate_input_name(name)
         self.input_var_store[name] = src
 
+    def update_k_x_discharge(self, index_crosswalk_cache):
+        if self.input_var_store["k"] is None or self.input_var_store["x"] is None or self.input_var_store["initial_discharge"] is None:
+            raise ValueError("Cant update the value when one of the input variables is None")
+        else:
+            for model_name, model in self.model_collection.models.items():
+                #the input_var_store stores information according to the
+                #sorted reach_ids list. To map it back to how model accepts it
+                #index_crosswalk_cache is required
+                model.K = self.input_var_store["k"][index_crosswalk_cache[model_name]]
+                model.X = self.input_var_store["x"][index_crosswalk_cache[model_name]]
+                model.o_next = self.input_var_store["initial_discharge"][index_crosswalk_cache[model_name]]
+
+                #update the msukingum coefficients
+                model.compute_muskingum_coeffs(model.K, model.X)
+
+
     def set_value_at_indices(self, name, inds, src):
         return NotImplementedError
-
 
     @staticmethod
     def _run_async(coro):

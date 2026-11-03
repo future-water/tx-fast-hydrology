@@ -536,11 +536,12 @@ class Muskingum:
                 raise ValueError('If `start_time` is specified, initial state `o_t_init` must be provided.')
         if o_t_init is not None:
             self.init_states(o_t_next=o_t_init)
+            
         # Crop input data to model reaches
         dataframe = dataframe[self.reach_ids]
 
         if only_one_time_step:
-            #only run pre simulation callbacks because that calls KF
+            #if with_troute, only run pre simulation callbacks because that calls KF
             if with_troute:
                 for _, callback in self.callbacks.items():
                     callback.__on_simulation_start__()
