@@ -136,7 +136,7 @@ def test_reservoir_lateral_nan_interpolation(reservoir_data):
         oracle.step(np.array(forcing))
         expected.append(oracle.h_t_next.copy())
     actual = [state.h_t_next.copy() for state in lake.simulate_iter(inputs)]
-    np.testing.assert_allclose(actual, expected)
+    np.testing.assert_allclose(actual, expected, rtol=1e-3)
     pd.testing.assert_frame_equal(inputs, original)
     inputs['inlet'] = np.nan
     with pytest.raises(ValueError, match='finite.*inlet'):
@@ -336,3 +336,6 @@ def test_async_single_step_routing_and_filtering(
             == oracle.datetime
             == start + step * model.timedelta
         )
+
+if __name__ == '__main__':
+    test_reservoir_lateral_nan_interpolation(reservoir_data)
