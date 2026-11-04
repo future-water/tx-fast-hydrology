@@ -89,8 +89,8 @@ class BmiKF:
 
         else:
             time_index = pd.date_range(
-            start=start_date, 
-            end=end_date, 
+            start=start_date,
+            end=end_date,
             freq=f"{dt}s"
             )
             input_columns = list(
@@ -115,7 +115,7 @@ class BmiKF:
 
         measurements = measurements[usgs_to_comid.index]
         measurements.columns = measurements.columns.map(usgs_to_comid)
-        
+
         # Subset measurements by the specified time window
         measurements = measurements.loc[start_date : end_date]
         measurements = measurements.dropna(axis=1)
@@ -144,8 +144,9 @@ class BmiKF:
 
         for model in model_collection.models.values():
             if not isinstance(model_collection, Reservoir):
-                outlet = model.startnodes[model.startnodes == model.endnodes].item()
-                model.set_transmissive_boundary(outlet)
+                outlets = model.startnodes[model.startnodes == model.endnodes]
+                for outlet in outlets:
+                    model.set_transmissive_boundary(outlet)
             else:
                 continue
 
@@ -174,7 +175,7 @@ class BmiKF:
             self.inputs,
             self.dt,
         ) = self.load_and_build_inputs(self.config)
-        
+
         self.model_collection = self.prepare_model(
             self.model_collection,
             self.measurements,
@@ -232,7 +233,7 @@ class BmiKF:
         #sort the reach_list once and apply everytime when updating
         if self._sorted_indices is None:
             self._sorted_indices = np.argsort(self.output_var_store["reach_list"])
-            
+
         self.output_var_store["reach_list"] = self.output_var_store["reach_list"][self._sorted_indices]
         self.output_var_store["discharge"] = self.output_var_store["discharge"][self._sorted_indices]
 
@@ -262,7 +263,7 @@ class BmiKF:
 
     def get_current_datetime(self):
         return self.model_collection.datetime
-    
+
     def get_current_time(self):
         return self._current_time
 
