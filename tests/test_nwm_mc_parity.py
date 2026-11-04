@@ -1,7 +1,9 @@
 """Dataset parity gate for submodel 754 against NWM no-DA streamflow.
 
-Run ``python test_nwm_mc_parity.py`` to run the tests
-and write diagnostics. Discovery with unittest/pytest does not write files.
+Run ``python tests/test_nwm_mc_parity.py`` from the repository root to run
+the tests and write diagnostics. Discovery with unittest/pytest does not
+write files. Input fixtures live in ``test_data``; install dependencies
+from ``requirements.txt``.
 Acceptance requires pooled NSE >= 0.99 across all scored reaches and hours.
 Only short-timestep routing is evaluated. Per-reach metrics and hourly
 errors are retained as diagnostics.
@@ -22,10 +24,11 @@ import pandas as pd
 import xarray as xr
 
 
+# Resolve imports and fixtures from this checkout, independently of the cwd.
 ROOT = Path(__file__).resolve().parent
 BUNDLE_ROOT = ROOT.parent
 DATA_ROOT = BUNDLE_ROOT / "test_data"
-SOURCE_ROOT = ROOT
+SOURCE_ROOT = BUNDLE_ROOT
 sys.path.insert(0, str(SOURCE_ROOT))
 
 from tx_fast_hydrology.io import ModelDecoder
@@ -215,7 +218,7 @@ class NwmNoDaParityTests(unittest.TestCase):
             data.reference.index, pd.date_range(START, END, freq="1h"),
             check_names=False,
         )
-        csv_ids = pd.read_csv(BUNDLE_ROOT / "reach_ids_754.csv", dtype=str)["reach_id"].tolist()
+        csv_ids = pd.read_csv(DATA_ROOT / "reach_ids_754.csv", dtype=str)["reach_id"].tolist()
         self.assertEqual(data.reference.columns.tolist(), csv_ids)
         for frame in (data.reference, data.lateral):
             self.assertTrue(np.isfinite(frame.to_numpy()).all())
