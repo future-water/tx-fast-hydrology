@@ -964,6 +964,7 @@ class Reservoir():
             
         # Crop input data to model reaches
         dataframe = dataframe[self.reach_ids]
+        print("I'm here")
 
         if only_one_time_step:
             #if with_troute, only run pre simulation callbacks because that calls KF

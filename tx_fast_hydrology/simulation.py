@@ -111,8 +111,14 @@ class AsyncSimulation(Simulation):
         return self.outputs
 
     async def _main(self, only_one_time_step=False):
-        indegree = {model.name : len(model.sources) for model 
-                    in self.model_collection.models.values()}
+        # Self-connections mark outlets, rather than upstream work to await.
+        indegree = {
+            model.name: sum(
+                source.upstream_model.name != model.name
+                for source in model.sources
+            )
+            for model in self.model_collection.models.values()
+        }
         self._indegree = indegree
         async with asyncio.TaskGroup() as taskgroup:
             for name, predecessors in indegree.items():
