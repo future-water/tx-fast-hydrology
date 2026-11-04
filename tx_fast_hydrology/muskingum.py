@@ -17,6 +17,22 @@ MIN_SLOPE = 1e-8
 DEFAULT_START_TIME = pd.to_datetime(0., utc=True)
 DEFAULT_TIMEDELTA = pd.to_timedelta(3600, unit='s')
 
+
+def _prepare_lateral_inflows(dataframe, reach_ids):
+    """Fill each reach's NaNs in time, holding its nearest valid endpoint."""
+    inputs = dataframe.loc[:, reach_ids].astype(np.float64)
+    if inputs.empty:
+        raise ValueError('Lateral inflow requires at least one timestamp')
+    if inputs.isna().to_numpy().any():
+        inputs = inputs.interpolate(method='time', limit_direction='both')
+    invalid = ~np.isfinite(inputs.to_numpy())
+    if invalid.any():
+        reaches = inputs.columns[invalid.any(axis=0)].tolist()
+        raise ValueError('Lateral inflow must contain finite values after '
+                         f'interpolation; check reach IDs {reaches}')
+    return inputs
+
+
 class Muskingum:
     """
     Base class for implementing Muskingum routing.
@@ -146,8 +162,8 @@ class Muskingum:
         # Read json input file
         if isinstance(data, dict):
             self.load_model(data, load_optional=load_optional)
-        elif isinstance(data, str):
-            self.load_muskingum_model_file(data, load_optional=load_optional)
+        elif isinstance(data, (str, os.PathLike)):
+            self.load_model_file(data, load_optional=load_optional)
         else:
             raise TypeError('`data` must be a file path or dictionary.')
         # Create logger
@@ -415,7 +431,13 @@ class Muskingum:
             self.o_t_next[:] = o_t_next[:]
         if i_t_next is None:
             self.i_t_next[:] = 0.
-            np.add.at(self.i_t_next, self.endnodes, self.o_t_next[self.startnodes])
+            # An outlet's self-edge is a topology marker, not upstream inflow.
+            upstream_edges = self.startnodes != self.endnodes
+            np.add.at(
+                self.i_t_next,
+                self.endnodes[upstream_edges],
+                self.o_t_next[self.startnodes[upstream_edges]],
+            )
         else:
             self.i_t_next[:] = i_t_next[:]
 
@@ -536,33 +558,31 @@ class Muskingum:
                 raise ValueError('If `start_time` is specified, initial state `o_t_init` must be provided.')
         if o_t_init is not None:
             self.init_states(o_t_next=o_t_init)
-            
-        # Crop input data to model reaches
-        dataframe = dataframe[self.reach_ids]
+
+        # External t-route routing only needs the assimilation callback here.
+        if only_one_time_step and with_troute:
+            for _, callback in self.callbacks.items():
+                callback.__on_simulation_start__()
+            return self
+
+        dataframe = _prepare_lateral_inflows(dataframe, self.reach_ids)
+        input_times = dataframe.index.as_unit('ns').asi8.astype(float)
+        input_values = dataframe.to_numpy()
 
         if only_one_time_step:
-            #if with_troute, only run pre simulation callbacks because that calls KF
-            if with_troute:
+            if self.datetime < dataframe.index.min():
                 for _, callback in self.callbacks.items():
                     callback.__on_simulation_start__()
-                return self
+            next_timestep = self.datetime + self.timedelta
+            p_t_next = interpolate_sample(
+                float(next_timestep.value), input_times, input_values,
+            )
+            self.step_iter(p_t_next, **kwargs)
 
-            else:
-                # Execute pre-simulation callbacks
-                if self.datetime < dataframe.index.min():
-                    for _, callback in self.callbacks.items():
-                        callback.__on_simulation_start__()
-                next_timestep = self.datetime + self.timedelta
-                p_t_next = interpolate_sample(float(next_timestep.value), 
-                                            dataframe.index.astype(int).astype(float).values,
-                                            dataframe.values) 
-                self.step_iter(p_t_next, **kwargs)
-
-                if self.datetime > end_time:
-                    # Execute post-simulation callbacks
-                    for _, callback in self.callbacks.items():
-                        callback.__on_simulation_end__()
-                return self
+            if self.datetime > end_time:
+                for _, callback in self.callbacks.items():
+                    callback.__on_simulation_end__()
+            return self
 
         def simulate_window():
             # Execute pre-simulation callbacks
@@ -570,9 +590,9 @@ class Muskingum:
                 callback.__on_simulation_start__()
             while self.datetime < end_time:
                 next_timestep = self.datetime + self.timedelta
-                p_t_next = interpolate_sample(float(next_timestep.value), 
-                                              dataframe.index.astype(int).astype(float).values,
-                                              dataframe.values) 
+                p_t_next = interpolate_sample(
+                    float(next_timestep.value), input_times, input_values,
+                )
                 self.step_iter(p_t_next, **kwargs)
                 yield self
             # Execute post-simulation callbacks
@@ -592,6 +612,9 @@ class Muskingum:
             Dataframe of lateral inputs at each reach (e.g. runoff + recharge).
             Column labels must contain each `reach_id` in the model.
             Index must be of type pd.DateTime with UTC timezone.
+            NaNs are interpolated in time independently for each reach, with
+            the nearest valid value held at either end. Entirely missing or
+            non-finite inflow columns raise ValueError.
             
         start_time : pd.DateTime
             Starting time of the simulation. Defaults to self.datetime.
@@ -769,8 +792,8 @@ class Reservoir():
         # Read json input file
         if isinstance(data, dict):
             self.load_model(data, load_optional=load_optional)
-        elif isinstance(data, str):
-            self.load_reservoir_model_file(data, load_optional=load_optional)
+        elif isinstance(data, (str, os.PathLike)):
+            self.load_model_file(data, load_optional=load_optional)
         else:
             raise TypeError('`data` must be a file path or dictionary.')
         # Create logger
@@ -962,16 +985,17 @@ class Reservoir():
                 ValueError('If `start_time` is specified, initial state `o_t_init` must be provided.')
         if o_t_init is not None:
             self.init_states(o_t_next=o_t_init)
+        dataframe = _prepare_lateral_inflows(dataframe, self.reach_ids)
+        input_times = dataframe.index.as_unit('ns').asi8.astype(float)
+        input_values = dataframe.to_numpy()
         # Execute pre-simulation callbacks
         for _, callback in self.callbacks.items():
             callback.__on_simulation_start__()
-        # Crop input data to model reaches
-        dataframe = dataframe[self.reach_ids]
         while self.datetime < end_time:
             next_timestep = self.datetime + self.timedelta
-            p_t_next = interpolate_sample(float(next_timestep.value), 
-                                          dataframe.index.astype('int64').astype(float).values,
-                                          dataframe.values) 
+            p_t_next = interpolate_sample(
+                float(next_timestep.value), input_times, input_values,
+            )
             self.step_iter(p_t_next, **kwargs)
             yield self
         # Execute post-simulation callbacks
@@ -1161,7 +1185,7 @@ def load_muskingum_model_file(file_path, load_optional=True):
         return obj
     else:
         obj = {k : v for k, v in obj.items()
-               if not k in required_fields}
+               if k in required_fields}
         return obj
 
 def load_reservoir_model_file(file_path, load_optional=True):
@@ -1194,7 +1218,7 @@ def load_reservoir_model_file(file_path, load_optional=True):
         return obj
     else:
         obj = {k : v for k, v in obj.items()
-               if not k in required_fields}
+               if k in required_fields}
         return obj
 
 
@@ -1229,9 +1253,9 @@ def load_nhd_geojson(file_path):
     source_node_ids = source_node_ids
     target_node_ids = target_node_ids
     self_loops = []
-    node_index_map = pd.Series(np.arange(len(node_ids)), index=node_ids)
-    startnodes = node_index_map.reindex(source_node_ids, fill_value=-1).values
-    endnodes = node_index_map.reindex(target_node_ids, fill_value=-1).values
+    node_index_map = pd.Series(np.arange(len(node_ids), dtype=np.int64), index=node_ids)
+    startnodes = node_index_map.reindex(source_node_ids, fill_value=-1).to_numpy(dtype=np.int64)
+    endnodes = node_index_map.reindex(target_node_ids, fill_value=-1).to_numpy(dtype=np.int64)
     for i in range(len(startnodes)):
         if endnodes[i] == -1:
             self_loops.append(i)
@@ -1288,24 +1312,3 @@ def load_model_collection(file_path, load_optional=True):
         downstream_model.sources.append(connection)
     models = list(models.values())
     return models
-
-
-def _solve_normal_depth(h, Q, B, z, mann_n, So):
-    Q_computed = _Q(h, Q, B, z, mann_n, So)
-    return Q_computed - Q
-
-
-def _Q(h, Q, B, z, mann_n, So):
-    A = h * (B + z * h)
-    P = B + 2 * h * np.sqrt(1 + z**2)
-    Q = (np.sqrt(So) / mann_n) * A ** (5 / 3) / P ** (2 / 3)
-    return Q
-
-def _dQ_dh(h, Q, B, z, mann_n, So):
-    num_0 = 5 * np.sqrt(So) * (h * (B + h * z)) ** (2 / 3) * (B + 2 * h * z)
-    den_0 = 3 * mann_n * (B + 2 * h * np.sqrt(z + 1)) ** (2 / 3)
-    num_1 = 4 * np.sqrt(So) * np.sqrt(z + 1) * (h * (B + h * z)) ** (5 / 3)
-    den_1 = 3 * mann_n * (B + 2 * h * np.sqrt(z + 1)) ** (5 / 3)
-    t0 = num_0 / den_0
-    t1 = num_1 / den_1
-    return t0 - t1

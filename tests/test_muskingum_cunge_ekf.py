@@ -2,6 +2,7 @@
 Basically checks to make sure K, X are being updated properly
 and that the Jacobian is being computed as expected from these updates
 """
+
 import numpy as np
 import pandas as pd
 
@@ -37,7 +38,9 @@ def make_three_reach_model(assume_short_ts=None, sparse=False):
         'nCC': np.full(3, 0.06),
     }
     return MuskingumCunge(
-        data, geometry=geometry, assume_short_ts=assume_short_ts,
+        data,
+        geometry=geometry,
+        assume_short_ts=assume_short_ts,
         sparse=sparse,
     )
 
@@ -120,7 +123,10 @@ def test_ekf_uses_latest_jacobian_for_covariance_and_reduces_residual():
     Q_cov = np.eye(3) * 0.01
     R_cov = np.eye(1) * 0.25
     ekf = ExtendedKalmanFilter(
-        model, measurements, Q_cov=Q_cov, R_cov=R_cov,
+        model,
+        measurements,
+        Q_cov=Q_cov,
+        R_cov=R_cov,
         P_t_init=P_init,
     )
     model.bind_callback(ekf, key='ekf')
@@ -149,9 +155,7 @@ def test_ekf_uses_latest_jacobian_for_covariance_and_reduces_residual():
     expected_posterior = expected_prior - (
         expected_gain @ expected_prior[observed, :]
     )
-    expected_posterior = 0.5 * (
-        expected_posterior + expected_posterior.T
-    )
+    expected_posterior = 0.5 * (expected_posterior + expected_posterior.T)
     np.testing.assert_allclose(ekf.P_t_next, expected_posterior)
     np.testing.assert_allclose(ekf.P_t_next, ekf.P_t_next.T)
     assert np.linalg.eigvalsh(ekf.P_t_next).min() >= -1e-12
@@ -160,31 +164,6 @@ def test_ekf_uses_latest_jacobian_for_covariance_and_reduces_residual():
     posterior_residual = interpolated_observation - model.o_t_next[2]
     assert abs(posterior_residual) < abs(ekf.dz[0])
     assert ekf.datetime in ekf.covariance_trace_history
-
-
-def test_ekf_interpolates_over_sparse_observation_rows():
-    model = make_three_reach_model()
-    timestamp = model.datetime
-    measurements = pd.DataFrame(
-        {'outlet': [3.0, np.nan, np.nan, 6.0]},
-        index=pd.date_range(timestamp, periods=4, freq='5min'),
-    )
-    ekf = ExtendedKalmanFilter(
-        model,
-        measurements,
-        Q_cov=np.eye(3) * 0.01,
-        R_cov=np.eye(1) * 0.25,
-        P_t_init=np.eye(3),
-    )
-
-    np.testing.assert_allclose(
-        ekf.interpolate_input(timestamp + pd.Timedelta(minutes=5)),
-        [4.0],
-    )
-    np.testing.assert_allclose(
-        ekf.interpolate_input(timestamp + pd.Timedelta(minutes=10)),
-        [5.0],
-    )
 
 
 def test_matrix_free_mc_covariance_matches_dense_test_oracle():
@@ -198,8 +177,12 @@ def test_matrix_free_mc_covariance_matches_dense_test_oracle():
     out = np.empty_like(covariance)
 
     actual = _short_ts_aqat_par(
-        covariance, out, model.endnodes,
-        model.alpha, model.beta, model.chi,
+        covariance,
+        out,
+        model.endnodes,
+        model.alpha,
+        model.beta,
+        model.chi,
     )
     F_test_only = model.state_transition_jacobian()
     expected = F_test_only @ covariance @ F_test_only.T
@@ -213,11 +196,13 @@ def test_topological_routing_and_matrix_free_covariance_match_dense_oracle():
     model.step(np.array([0.2, 0.1, 0.0]))
 
     np.testing.assert_allclose(
-        model.i_t_next[2], model.o_t_next[:2].sum(),
+        model.i_t_next[2],
+        model.o_t_next[:2].sum(),
     )
     expected_transition = dense_topological_transition(model)
     np.testing.assert_allclose(
-        model.state_transition_jacobian(), expected_transition,
+        model.state_transition_jacobian(),
+        expected_transition,
     )
 
     generator = np.random.default_rng(1915)
@@ -225,8 +210,14 @@ def test_topological_routing_and_matrix_free_covariance_match_dense_oracle():
     covariance = factor @ factor.T
     headwaters = model.startnodes[model.indegree == 0]
     actual = _aqat_par(
-        covariance, np.empty_like(covariance), headwaters, model.endnodes,
-        model.alpha, model.beta, model.chi, model.indegree,
+        covariance,
+        np.empty_like(covariance),
+        headwaters,
+        model.endnodes,
+        model.alpha,
+        model.beta,
+        model.chi,
+        model.indegree,
     )
     expected = expected_transition @ covariance @ expected_transition.T
     np.testing.assert_allclose(actual, expected, rtol=1e-13, atol=1e-13)
@@ -257,3 +248,28 @@ def test_ekf_ignores_missing_measurements_without_changing_dimensions():
     assert ekf.K.shape == (model.n, 1)
     assert np.isfinite(ekf.P_t_next).all()
     assert np.isfinite(model.o_t_next).all()
+
+
+def test_ekf_interpolates_over_sparse_observation_rows():
+    model = make_three_reach_model()
+    timestamp = model.datetime
+    measurements = pd.DataFrame(
+        {'outlet': [3.0, np.nan, np.nan, 6.0]},
+        index=pd.date_range(timestamp, periods=4, freq='5min'),
+    )
+    ekf = ExtendedKalmanFilter(
+        model,
+        measurements,
+        Q_cov=np.eye(3) * 0.01,
+        R_cov=np.eye(1) * 0.25,
+        P_t_init=np.eye(3),
+    )
+
+    np.testing.assert_allclose(
+        ekf.interpolate_input(timestamp + pd.Timedelta(minutes=5)),
+        [4.0],
+    )
+    np.testing.assert_allclose(
+        ekf.interpolate_input(timestamp + pd.Timedelta(minutes=10)),
+        [5.0],
+    )

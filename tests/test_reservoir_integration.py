@@ -1,6 +1,6 @@
 """
 Checks continuity with the reservoir functionality and confirms
-quashing of two outstanding bugs related to reservoirs which 
+quashing of two outstanding bugs related to reservoirs which
 were also terminals as well as initialization with nonzero elements
 """
 
@@ -14,7 +14,10 @@ import pandas as pd
 
 from tx_fast_hydrology.da import ExtendedKalmanFilter, ReservoirNudging
 from tx_fast_hydrology.muskingum import (
-    Connection, ModelCollection, Muskingum, Reservoir,
+    Connection,
+    ModelCollection,
+    Muskingum,
+    Reservoir,
 )
 from tx_fast_hydrology.simulation import AsyncSimulation, CheckPoint
 
@@ -69,38 +72,37 @@ class ReservoirIntegrationTests(unittest.TestCase):
 
         above_weir = np.array([3.0])
         np.testing.assert_allclose(
-            reservoir.Q_w(above_weir), 1.6 * 20.0 * 1.0 ** 1.5
+            reservoir.Q_w(above_weir), 1.6 * 20.0 * 1.0**1.5
         )
         np.testing.assert_allclose(reservoir.Q_d(above_weir), 0.0)
 
         above_dam = np.array([5.0])
         np.testing.assert_allclose(
-            reservoir.Q_w(above_dam), 1.6 * 20.0 * 2.0 ** 1.5
+            reservoir.Q_w(above_dam), 1.6 * 20.0 * 2.0**1.5
         )
         np.testing.assert_allclose(
             reservoir.Q_d(above_dam),
-            1.6 * 20.0 * 5.0 * 1.0 ** 1.5,
+            1.6 * 20.0 * 5.0 * 1.0**1.5,
         )
 
     def test_one_step_satisfies_explicit_mass_balance(self):
         reservoir = Reservoir(reservoir_data())
         initial_stage = reservoir.h_t_next.copy()
         forcing = np.array([2.0, 0.0], dtype=np.float64)
-        expected_release = float(np.sum(
-            reservoir.Q_o(initial_stage)
-            + reservoir.Q_w(initial_stage)
-            + reservoir.Q_d(initial_stage)
-        ))
+        expected_release = float(
+            np.sum(
+                reservoir.Q_o(initial_stage)
+                + reservoir.Q_w(initial_stage)
+                + reservoir.Q_d(initial_stage)
+            )
+        )
 
         reservoir.step(forcing)
 
         storage_change = float(
-            reservoir.A_s[0]
-            * (reservoir.h_t_next[0] - initial_stage[0])
+            reservoir.A_s[0] * (reservoir.h_t_next[0] - initial_stage[0])
         )
-        expected_change = reservoir.dt * (
-            forcing.sum() - expected_release
-        )
+        expected_change = reservoir.dt * (forcing.sum() - expected_release)
         np.testing.assert_allclose(storage_change, expected_change)
         np.testing.assert_allclose(
             reservoir.o_t_next[reservoir.outlet_index], expected_release
@@ -127,7 +129,9 @@ class ReservoirIntegrationTests(unittest.TestCase):
         np.testing.assert_allclose(reservoir.o_t_next, [1.0, 2.0])
         np.testing.assert_allclose(reservoir.h_t_next, [2.5])
 
-    def test_model_collection_round_trip_retains_reservoir_type_and_connection(self):
+    def test_model_collection_round_trip_retains_reservoir_type_and_connection(
+        self,
+    ):
         reservoir = Reservoir(reservoir_data())
         downstream = Muskingum(linear_data())
         connection = Connection(reservoir, downstream, 1, 0, name='outlet')
@@ -153,9 +157,7 @@ class ReservoirIntegrationTests(unittest.TestCase):
     def test_async_connections_align_only_routed_timestamps(self):
         upstream = Muskingum(linear_data('upstream', 'upstream-channel'))
         reservoir = Reservoir(reservoir_data())
-        downstream = Muskingum(
-            linear_data('downstream', 'downstream-channel')
-        )
+        downstream = Muskingum(linear_data('downstream', 'downstream-channel'))
         into_reservoir = Connection(
             upstream, reservoir, 0, 0, name='into-reservoir'
         )
@@ -173,9 +175,7 @@ class ReservoirIntegrationTests(unittest.TestCase):
         downstream.sources.append(out_of_reservoir)
         collection = ModelCollection([upstream, reservoir, downstream])
 
-        times = pd.date_range(
-            upstream.datetime, periods=3, freq='h', tz='UTC'
-        )
+        times = pd.date_range(upstream.datetime, periods=3, freq='h', tz='UTC')
         forcing = pd.DataFrame(
             {
                 'upstream-channel': [0.0, 1.0, 1.0],
