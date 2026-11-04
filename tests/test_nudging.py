@@ -68,6 +68,7 @@ def build_linear_model(reaches=1):
 
 def test_wrf_temporal_weights_and_quality_scale_the_innovation():
     model = build_model()
+    assert 1==0
     model.datetime = START + pd.Timedelta(minutes=7, seconds=30)
     measurements = pd.DataFrame(
         {'1': [20.0, 40.0]},
