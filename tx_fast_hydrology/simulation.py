@@ -157,7 +157,9 @@ class AsyncSimulation(Simulation):
             if self.with_troute:
                 model.datetime += model.timedelta
         else:
-            for state in model.simulate_iter(inputs, o_t_init=o_t_init, only_one_time_step=only_one_time_step):
+            # Reservoirs use the shared window API without the channel-only
+            # single-step option; the channel default is already False here.
+            for state in model.simulate_iter(inputs, o_t_init=o_t_init):
                 current_time = state.datetime
                 o_t_next = state.o_t_next
                 outputs[current_time] = o_t_next
