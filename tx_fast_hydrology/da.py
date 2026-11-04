@@ -78,7 +78,8 @@ class KalmanFilter(BaseCallback):
 
     def interpolate_input(self, datetime, method='linear'):
         datetime = float(datetime.value)
-        datetimes = self.measurements.index.astype('int64').astype(float).values
+        # ns future compatibility with newer pandas
+        datetimes = self.measurements.index.as_unit('ns').asi8.astype(float)
         samples = self.measurements.values
         if method == 'linear':
             method_code = 1
@@ -86,7 +87,19 @@ class KalmanFilter(BaseCallback):
             method_code = 0
         else:
             raise ValueError
-        return interpolate_sample(datetime, datetimes, samples, method=method_code)
+        # Protection from nans
+        result = np.full(self.num_measurements, np.nan)
+        for column in range(self.num_measurements):
+            column_samples = samples[:, column]
+            valid = np.isfinite(column_samples)
+            if valid.any():
+                result[column] = interpolate_sample(
+                    datetime,
+                    datetimes[valid],
+                    column_samples[valid, np.newaxis],
+                    method=method_code,
+                )[0]
+        return result
 
     def save_state(self):
         self.saved_states["datetime"] = self.datetime

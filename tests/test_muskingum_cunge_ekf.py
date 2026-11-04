@@ -161,6 +161,32 @@ def test_ekf_uses_latest_jacobian_for_covariance_and_reduces_residual():
     assert abs(posterior_residual) < abs(ekf.dz[0])
     assert ekf.datetime in ekf.covariance_trace_history
 
+
+def test_ekf_interpolates_over_sparse_observation_rows():
+    model = make_three_reach_model()
+    timestamp = model.datetime
+    measurements = pd.DataFrame(
+        {'outlet': [3.0, np.nan, np.nan, 6.0]},
+        index=pd.date_range(timestamp, periods=4, freq='5min'),
+    )
+    ekf = ExtendedKalmanFilter(
+        model,
+        measurements,
+        Q_cov=np.eye(3) * 0.01,
+        R_cov=np.eye(1) * 0.25,
+        P_t_init=np.eye(3),
+    )
+
+    np.testing.assert_allclose(
+        ekf.interpolate_input(timestamp + pd.Timedelta(minutes=5)),
+        [4.0],
+    )
+    np.testing.assert_allclose(
+        ekf.interpolate_input(timestamp + pd.Timedelta(minutes=10)),
+        [5.0],
+    )
+
+
 def test_matrix_free_mc_covariance_matches_dense_test_oracle():
     """The dense comparison belongs in tests, never in filter execution."""
     model = make_three_reach_model()
