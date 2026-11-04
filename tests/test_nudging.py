@@ -74,10 +74,13 @@ def test_wrf_temporal_weights_and_quality_scale_the_innovation():
         index=[START, START + pd.Timedelta(minutes=15)],
     )
     quality = pd.DataFrame(
-        {'1': [0.5, 0.5]}, index=measurements.index,
+        {'1': [0.5, 0.5]},
+        index=measurements.index,
     )
     nudging = WRFHydroStreamflowNudging(
-        model, measurements, quality=quality,
+        model,
+        measurements,
+        quality=quality,
         temporal_persistence=False,
     )
 
@@ -94,8 +97,11 @@ def test_wrf_forecast_persistence_uses_exponential_coefficient():
     model.datetime = START + pd.Timedelta(minutes=120)
     measurements = pd.DataFrame({'1': [20.0]}, index=[START])
     nudging = WRFHydroStreamflowNudging(
-        model, measurements, tau_minutes=15,
-        exp_coefficients=120.0, temporal_persistence=True,
+        model,
+        measurements,
+        tau_minutes=15,
+        exp_coefficients=120.0,
+        temporal_persistence=True,
         assimilation_end=START,
     )
 
@@ -108,7 +114,9 @@ def test_wrf_previous_nudge_enters_both_mc_upstream_terms():
     model = build_model(reaches=2)
     measurements = pd.DataFrame({'2': [20.0]}, index=[START])
     nudging = WRFHydroStreamflowNudging(
-        model, measurements, tau_minutes=1,
+        model,
+        measurements,
+        tau_minutes=1,
         temporal_persistence=False,
     )
     model.bind_callback(nudging, key='streamflow_nudging')
@@ -117,10 +125,22 @@ def test_wrf_previous_nudge_enters_both_mc_upstream_terms():
     previous_flow = model.o_t_next.copy()
     previous_nudge = nudging.previous_nudge.copy()
     expected = _mc_ax_bu(
-        model.startnodes[model.indegree == 0], model.endnodes,
-        model.indegree, previous_flow, np.zeros(model.n), model.depth.copy(),
-        300.0, model.So, model.dx, model.mann_n, model.Cs, model.Bw,
-        model.Tw, model.TwCC, model.nCC, previous_nudge,
+        model.startnodes[model.indegree == 0],
+        model.endnodes,
+        model.indegree,
+        previous_flow,
+        np.zeros(model.n),
+        model.depth.copy(),
+        300.0,
+        model.So,
+        model.dx,
+        model.mann_n,
+        model.Cs,
+        model.Bw,
+        model.Tw,
+        model.TwCC,
+        model.nCC,
+        previous_nudge,
         model.assume_short_ts,
     )[0]
 
@@ -134,7 +154,9 @@ def test_wrf_previous_nudge_enters_both_linear_upstream_terms():
     model = build_linear_model()
     measurements = pd.DataFrame({'1': [20.0]}, index=[START])
     nudging = WRFHydroStreamflowNudging(
-        model, measurements, tau_minutes=1,
+        model,
+        measurements,
+        tau_minutes=1,
         temporal_persistence=False,
     )
     model.bind_callback(nudging, key='streamflow_nudging')
@@ -157,7 +179,9 @@ def test_wrf_zero_nudge_preserves_linear_routing_exactly():
     nudged = build_linear_model(reaches=3)
     measurements = pd.DataFrame({'1': [np.nan]}, index=[START])
     callback = WRFHydroStreamflowNudging(
-        nudged, measurements, temporal_persistence=False,
+        nudged,
+        measurements,
+        temporal_persistence=False,
     )
     nudged.bind_callback(callback, key='streamflow_nudging')
 
@@ -211,7 +235,9 @@ def test_troute_linear_model_routes_from_corrected_state_next_step():
     expected_model = build_linear_model()
     measurements = pd.DataFrame({'1': [25.0]}, index=[START])
     nudging = StreamflowNudging(
-        model, measurements, temporal_persistence=False,
+        model,
+        measurements,
+        temporal_persistence=False,
     )
     model.bind_callback(nudging, key='streamflow_nudging')
     nudging.update()
@@ -229,7 +255,9 @@ def test_troute_decay_matches_simple_da_equation():
     model = build_model()
     measurements = pd.DataFrame({'1': [20.0]}, index=[START])
     nudging = StreamflowNudging(
-        model, measurements, decay_coefficient=120.0,
+        model,
+        measurements,
+        decay_coefficient=120.0,
     )
     nudging.update()
 
@@ -262,14 +290,18 @@ def test_troute_quality_is_a_gate_not_a_nudge_multiplier():
 
     rejected_model = build_model()
     rejected = StreamflowNudging(
-        rejected_model, measurements, quality=0.5,
+        rejected_model,
+        measurements,
+        quality=0.5,
         quality_threshold=1.0,
     ).update()
     np.testing.assert_array_equal(rejected, [0.0])
 
     accepted_model = build_model()
     accepted = StreamflowNudging(
-        accepted_model, measurements, quality=0.5,
+        accepted_model,
+        measurements,
+        quality=0.5,
         quality_threshold=0.5,
     ).update()
     # Once accepted, the observation replaces the model value in full.
@@ -281,7 +313,9 @@ def test_troute_does_not_add_wrf_upstream_nudge_term():
     model = build_model(reaches=2)
     measurements = pd.DataFrame({'2': [20.0]}, index=[START])
     nudging = StreamflowNudging(
-        model, measurements, temporal_persistence=False,
+        model,
+        measurements,
+        temporal_persistence=False,
     )
     model.bind_callback(nudging, key='streamflow_nudging')
     nudging.update()
@@ -289,10 +323,22 @@ def test_troute_does_not_add_wrf_upstream_nudge_term():
     previous_flow = model.o_t_next.copy()
     zeros = np.zeros(model.n, dtype=np.float64)
     expected = _mc_ax_bu(
-        model.startnodes[model.indegree == 0], model.endnodes,
-        model.indegree, previous_flow, zeros, model.depth.copy(),
-        300.0, model.So, model.dx, model.mann_n, model.Cs, model.Bw,
-        model.Tw, model.TwCC, model.nCC, zeros,
+        model.startnodes[model.indegree == 0],
+        model.endnodes,
+        model.indegree,
+        previous_flow,
+        zeros,
+        model.depth.copy(),
+        300.0,
+        model.So,
+        model.dx,
+        model.mann_n,
+        model.Cs,
+        model.Bw,
+        model.Tw,
+        model.TwCC,
+        model.nCC,
+        zeros,
         model.assume_short_ts,
     )[0]
 
@@ -304,7 +350,8 @@ def test_troute_does_not_add_wrf_upstream_nudge_term():
 def test_troute_missing_observation_without_history_is_passthrough():
     model = build_model()
     measurements = pd.DataFrame(
-        {'1': [np.nan]}, index=[START + pd.Timedelta(minutes=5)],
+        {'1': [np.nan]},
+        index=[START + pd.Timedelta(minutes=5)],
     )
 
     nudge = StreamflowNudging(model, measurements).update()

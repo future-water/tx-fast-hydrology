@@ -8,32 +8,39 @@ import numpy as np
 import pandas as pd
 
 from tx_fast_hydrology.hydrofabric import (
-    HydrofabricNetwork, load_hydrofabric,
+    HydrofabricNetwork,
+    load_hydrofabric,
 )
 from tx_fast_hydrology.muskingum import ModelCollection
 from tx_fast_hydrology.muskingum_cunge import MuskingumCunge
 
 
 def fixture_tables():
-    flowpaths = pd.DataFrame({
-        'id': ['wb-1', 'wb-2', 'wb-3'],
-        'toid': ['nex-1', 'nex-1', 'nex-out'],
-    })
-    attributes = pd.DataFrame({
-        'id': ['wb-3', 'wb-1', 'wb-2'],
-        'Length_m': [1200.0, 800.0, 900.0],
-        'So': [0.0010, 0.0012, 0.0008],
-        'n': [0.035, 0.033, 0.034],
-        'ChSlp': [0.5, 0.5, 0.5],
-        'BtmWdth': [12.0, 8.0, 9.0],
-        'TopWdth': [18.0, 12.0, 13.0],
-        'TopWdthCC': [40.0, 30.0, 32.0],
-        'nCC': [0.08, 0.08, 0.08],
-    })
-    nexus = pd.DataFrame({
-        'id': ['nex-1', 'nex-out'],
-        'toid': ['wb-3', None],
-    })
+    flowpaths = pd.DataFrame(
+        {
+            'id': ['wb-1', 'wb-2', 'wb-3'],
+            'toid': ['nex-1', 'nex-1', 'nex-out'],
+        }
+    )
+    attributes = pd.DataFrame(
+        {
+            'id': ['wb-3', 'wb-1', 'wb-2'],
+            'Length_m': [1200.0, 800.0, 900.0],
+            'So': [0.0010, 0.0012, 0.0008],
+            'n': [0.035, 0.033, 0.034],
+            'ChSlp': [0.5, 0.5, 0.5],
+            'BtmWdth': [12.0, 8.0, 9.0],
+            'TopWdth': [18.0, 12.0, 13.0],
+            'TopWdthCC': [40.0, 30.0, 32.0],
+            'nCC': [0.08, 0.08, 0.08],
+        }
+    )
+    nexus = pd.DataFrame(
+        {
+            'id': ['nex-1', 'nex-out'],
+            'toid': ['wb-3', None],
+        }
+    )
     return flowpaths, attributes, nexus
 
 
@@ -75,7 +82,8 @@ class HydrofabricIntegrationTests(unittest.TestCase):
 
             network = load_hydrofabric(path)
             model = MuskingumCunge.from_hydrofabric(
-                path, timedelta='5min',
+                path,
+                timedelta='5min',
                 initial_flow={'wb-3': 0.0, 'wb-2': 0.0, 'wb-1': 0.0},
             )
 

@@ -112,12 +112,9 @@ class KalmanFilter(BaseCallback):
     def filter(self):
         # Implements KF after step is called
         P_t_prev = self.P_t_next
-        i_t_next = self.model.i_t_next
-        o_t_next = self.model.o_t_next
+        i_t_next = self.model.i_t_next.copy()
+        o_t_next = self.model.o_t_next.copy()
         Q_cov = self.Q_cov
-        R_cov = self.R_cov
-        measurements = self.measurements
-        s = self.s
         startnodes = self.model.startnodes
         endnodes = self.model.endnodes
         indegree = self.model.indegree
@@ -125,31 +122,45 @@ class KalmanFilter(BaseCallback):
         alpha = self.model.alpha
         beta = self.model.beta
         chi = self.model.chi
-        gamma = self.model.gamma
         datetime = self.model.datetime
-        # Computed parameters
-        Z = self.interpolate_input(datetime)
-        #Z = measurements.loc[datetime].values
-        dz = Z - o_t_next[s]
+        observations = self.interpolate_input(datetime)
+        valid = np.isfinite(observations)
+        observation_indices = self.reach_indices[valid]
+        dz = observations[valid] - o_t_next[observation_indices]
         # Compute prior covariance
         out = np.empty(P_t_prev.shape)
-        P_t_next = _aqat_par(P_t_prev, out, sub_startnodes, endnodes,
+        P_t_prior = _aqat_par(P_t_prev, out, sub_startnodes, endnodes,
                              alpha, beta, chi, indegree)
-        P_t_next += Q_cov
-        # Compute gain and posterior covariance
-        K = P_t_next[:,s] @ np.linalg.inv(P_t_next[s][:,s] + R_cov)
-        # K = np.linalg.solve(P_t_next[s][:,s] + R_cov, P_t_next[s, :]).T
-        gain = K @ dz
-        P_t_next = P_t_next - K @ P_t_next[s]
+        P_t_prior += Q_cov
+        P_t_prior = 0.5 * (P_t_prior + P_t_prior.T)
+        # Match the EKF's observation mask, including prediction-only updates.
+        gain = np.zeros(self.model.n, dtype=np.float64)
+        if observation_indices.size:
+            R_cov = self.R_cov[np.ix_(valid, valid)]
+            innovation_cov = (
+                P_t_prior[np.ix_(observation_indices, observation_indices)]
+                + R_cov
+            )
+            K = np.linalg.solve(
+                innovation_cov, P_t_prior[observation_indices, :]
+            ).T
+            gain = K @ dz
+            P_t_next = P_t_prior - K @ P_t_prior[observation_indices, :]
+            P_t_next = 0.5 * (P_t_next + P_t_next.T)
+        else:
+            K = np.empty((self.model.n, 0), dtype=np.float64)
+            P_t_next = P_t_prior
         # Apply gain
         i_t_gain, o_t_gain = _apply_gain(sub_startnodes, endnodes, gain, indegree)
         i_t_next += i_t_gain
         o_t_next += o_t_gain
         # Save posterior estimates
         self.model.i_t_next = i_t_next
-        self.model.o_t_next = o_t_next        
+        self.model.o_t_next = o_t_next
+        self.P_t_prior = P_t_prior
         self.P_t_next = P_t_next
         self.P_t_prev = P_t_prev
+        self.observation_indices = observation_indices
         self.K = K
         self.dz = dz
         self.gain = gain
