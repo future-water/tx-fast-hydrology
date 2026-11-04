@@ -962,7 +962,8 @@ class Reservoir():
             callback.__on_step_end__()
         self.logger.debug(f'Stepped to time {self.datetime}')
 
-    def simulate_iter(self, dataframe, start_time=None, end_time=None, o_t_init=None, **kwargs):
+    def simulate_iter(self, dataframe, start_time=None, end_time=None, o_t_init=None,
+                      only_one_time_step=False, with_troute=False, **kwargs):
         assert isinstance(dataframe.index, pd.core.indexes.datetimes.DatetimeIndex)
         assert (dataframe.index.tz == datetime.timezone.utc)
         assert np.isin(self.reach_ids, dataframe.columns).all()
@@ -979,28 +980,53 @@ class Reservoir():
             start_time = self.datetime
         else:
             self.datetime = start_time
-            try:
-                assert o_t_init is not None
-            except:
-                ValueError('If `start_time` is specified, initial state `o_t_init` must be provided.')
+            if o_t_init is None:
+                raise ValueError('If `start_time` is specified, initial state `o_t_init` must be provided.')
         if o_t_init is not None:
             self.init_states(o_t_next=o_t_init)
-        dataframe = _prepare_lateral_inflows(dataframe, self.reach_ids)
-        input_times = dataframe.index.as_unit('ns').asi8.astype(float)
-        input_values = dataframe.to_numpy()
-        # Execute pre-simulation callbacks
-        for _, callback in self.callbacks.items():
-            callback.__on_simulation_start__()
-        while self.datetime < end_time:
-            next_timestep = self.datetime + self.timedelta
-            p_t_next = interpolate_sample(
-                float(next_timestep.value), input_times, input_values,
-            )
-            self.step_iter(p_t_next, **kwargs)
-            yield self
-        # Execute post-simulation callbacks
-        for _, callback in self.callbacks.items():
-            callback.__on_simulation_end__()
+
+        dataframe = _prepare_lateral_inflows(dataframe, self.reach_ids)  
+
+        if only_one_time_step:
+            #if with_troute, only run pre simulation callbacks because that calls KF
+            if with_troute:
+                for _, callback in self.callbacks.items():
+                    callback.__on_simulation_start__()
+                return self
+
+            else:
+                # Execute pre-simulation callbacks
+                if self.datetime < dataframe.index.min():
+                    for _, callback in self.callbacks.items():
+                        callback.__on_simulation_start__()
+                next_timestep = self.datetime + self.timedelta
+                p_t_next = interpolate_sample(float(next_timestep.value), 
+                                            dataframe.index.astype(int).astype(float).values,
+                                            dataframe.values) 
+                self.step_iter(p_t_next, **kwargs)
+
+                if self.datetime > end_time:
+                    # Execute post-simulation callbacks
+                    for _, callback in self.callbacks.items():
+                        callback.__on_simulation_end__()
+                return self
+
+        def simulate_window():
+            # Execute pre-simulation callbacks
+            for _, callback in self.callbacks.items():
+                callback.__on_simulation_start__()
+            while self.datetime < end_time:
+                next_timestep = self.datetime + self.timedelta
+                p_t_next = interpolate_sample(float(next_timestep.value), 
+                                              dataframe.index.astype(int).astype(float).values,
+                                              dataframe.values) 
+                self.step_iter(p_t_next, **kwargs)
+                yield self
+            # Execute post-simulation callbacks
+            for _, callback in self.callbacks.items():
+                callback.__on_simulation_end__()
+
+        return simulate_window()
 
     def save_state(self):
         self.logger.info(f'Saving state for model {self.name} at time {self.datetime}...')

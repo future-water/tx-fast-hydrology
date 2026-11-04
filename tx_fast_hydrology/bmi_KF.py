@@ -18,7 +18,7 @@ import pandas as pd
 from tx_fast_hydrology.simulation import AsyncSimulation
 from tx_fast_hydrology.da import KalmanFilter
 from tx_fast_hydrology.muskingum import ModelCollection
-
+from tx_fast_hydrology.muskingum import Reservoir
 
 #we will have remove this later. This adds streamflow in the upstream boundary
 UPSTREAM_INPUTS = {
@@ -126,21 +126,28 @@ class BmiKF:
         return model_collection, measurements, inputs, dt
 
     def prepare_model(self, model_collection, measurements, dt, config):
+        #do not have to bind call back for the reservoir model since we're not doing DA for it
         for model in model_collection.models.values():
-            model_sites = [
-                reach_id for reach_id in model.reach_ids if reach_id in measurements.columns
-            ]
-            if model_sites:
-                basin_measurements = measurements[model_sites]
-                Q_cov = 1.0 * np.eye(model.n)
-                R_cov = 1.0 * np.eye(basin_measurements.shape[1])
-                P_t_init = Q_cov.copy()
-                kf = KalmanFilter(model, basin_measurements, Q_cov, R_cov, P_t_init)
-                model.bind_callback(kf, key="kf")
+            if not isinstance(model_collection, Reservoir):
+                model_sites = [
+                    reach_id for reach_id in model.reach_ids if reach_id in measurements.columns
+                ]
+                if model_sites:
+                    basin_measurements = measurements[model_sites]
+                    Q_cov = 1.0 * np.eye(model.n)
+                    R_cov = 1.0 * np.eye(basin_measurements.shape[1])
+                    P_t_init = Q_cov.copy()
+                    kf = KalmanFilter(model, basin_measurements, Q_cov, R_cov, P_t_init)
+                    model.bind_callback(kf, key="kf")
+                else:
+                    continue
 
         for model in model_collection.models.values():
-            outlet = model.startnodes[model.startnodes == model.endnodes].item()
-            model.set_transmissive_boundary(outlet)
+            if not isinstance(model_collection, Reservoir):
+                outlet = model.startnodes[model.startnodes == model.endnodes].item()
+                model.set_transmissive_boundary(outlet)
+            else:
+                continue
 
         timedelta = pd.to_timedelta(dt, unit="s")
 
@@ -149,7 +156,8 @@ class BmiKF:
             if not self.with_troute:
                 model.datetime = pd.to_datetime(config["start_date"]) - timedelta
             else:
-                model.datetime = pd.to_datetime(config["start_date"])
+                #troute routs and gives discharge for the 1st timestep, not 0th
+                model.datetime = pd.to_datetime(config["start_date"]) + timedelta
         return model_collection
 
     def initialize(self, config_file="KF.yaml"):
