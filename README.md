@@ -23,13 +23,25 @@ python -m venv .venv
 ```
 
 On Linux or macOS, replace `.venv/Scripts/python` with
-`.venv/bin/python`. The NumPy and Numba bounds in `setup.py` are intentional:
-Numba 0.59 supports NumPy 1.22 through 1.26.
+`.venv/bin/python`. The NumPy and Numba bounds in `pyproject.toml` are
+intentional: Numba 0.59 supports NumPy 1.22 through 1.26.
+
+With [uv](https://docs.astral.sh/uv/), on any platform:
+
+```console
+uv sync --extra dev
+```
 
 For an exactly reproducible development environment:
 
 ```console
-python -m pip install -r requirements.txt
+python -m pip install -e ".[pinned]"
+```
+
+Or with uv:
+
+```console
+uv sync --extra pinned
 ```
 
 ## Muskingum-Cunge and the EKF
@@ -168,6 +180,12 @@ Run them with:
 
 ```console
 python -m pytest -q
+```
+
+Or with uv:
+
+```console
+uv run --extra dev pytest -q
 ```
 
 See `MERGE_NOTES.md` for the change inventory and validation boundary.

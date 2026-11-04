@@ -2,6 +2,57 @@
 requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
+[project]
+name = "tx-fast-hydrology"
+version = "0.1"
+description = "Routing and data assimilation code for TxDOT FAST project."
+readme = "README.md"
+authors = [{ name = "Matt Bartos", email = "mdbartos@utexas.edu" }]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "Natural Language :: English",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Hydrology",
+]
+requires-python = ">=3.11,<3.13"
+dependencies = [
+    "numpy>=1.22,<1.27",
+    "pandas>=2.0,<3",
+    "numba>=0.59,<0.60",
+    "scipy>=1.10,<2",
+    "xarray>=2024.1,<2025",
+    "h5netcdf>=1.3,<2",
+    "h5py>=3.10,<4",
+]
+
+[project.optional-dependencies]
+dev = ["pytest", "pytest-cov"]
+# Reproducible Python 3.11/3.12 development environment.
+# Numba 0.59.1 officially supports NumPy >=1.22,<1.27.
+pinned = [
+    "numpy==1.26.4",
+    "numba==0.59.1",
+    "pandas==2.2.3",
+    "scipy==1.14.1",
+    "xarray==2024.11.0",
+    "h5netcdf==1.4.1",
+    "h5py==3.12.1",
+    "pytest==8.3.4",
+    "pytest-cov==6.0.0",
+]
+
+[project.urls]
+Homepage = "https://future-water.org"
+
+[tool.setuptools]
+packages = ["tx_fast_hydrology"]
+include-package-data = true
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-ra"
