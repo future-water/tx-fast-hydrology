@@ -1,0 +1,32 @@
+name: Tests
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    branches:
+      - EKF_Troute
+
+jobs:
+  pytest:
+    name: Pytest (Python 3.11)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v7
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v10.3.3
+
+      - name: Create virtual environment
+        run: uv venv -p 3.11
+
+      - name: Install dependencies
+        run: |
+          uv pip install -r requirements.txt
+          uv pip install pytest-github-actions-annotate-failures
+          uv pip install -e .
+
+      - name: Run tests
+        run: |
+          source .venv/bin/activate
+          pytest --color=yes
